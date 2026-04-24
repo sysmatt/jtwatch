@@ -1,8 +1,12 @@
 # jtwatch
 
-A terminal monitor for WSJT-X CQ calls. Listens on the WSJT-X UDP broadcast port and prints every CQ decode to stdout, enriched with DXCC entity, CQ zone, ITU zone, continent, and grid square from the AD1C `cty.dat` prefix database.
+A terminal based (CLI) monitor for WSJT-X CQ calls. Listens on the WSJT-X UDP broadcast port and prints every CQ decode to stdout, enriched with DXCC entity, CQ zone, ITU zone, continent, and grid square from the AD1C `cty.dat` prefix database.
 
-With an ADIF logbook loaded, jtwatch flags contacts whose entity, CQ zone, or country you have not yet worked as **NEEDED** and rings the terminal bell. Optional regex watchlists let you flag specific callsigns or message patterns. External alerts can be sent via a custom script or [ntfy.sh](https://ntfy.sh) push notifications.
+With an ADIF logbook loaded, jtwatch flags contacts whose entity, CQ zone, or country you have not yet worked as **NEEDED** and rings the terminal bell. 
+
+When invoked with the --call option, jtwatch will prompt the pilot for confirmation then tell WSJT-X to begin responding to the CQ (Just like if you double clicked the call in the GUI) -- NOTE, This is NOT an automation tool, you MUST initiate the reply call.  
+
+Optional regex watchlists let you flag specific callsigns or message patterns. External alerts can be sent via a custom script or [ntfy.sh](https://ntfy.sh) push notifications.
 
 ### Note: Tested with WSJT-X 3.1.0 Improved
 
