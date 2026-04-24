@@ -4,6 +4,8 @@ A terminal monitor for WSJT-X CQ calls. Listens on the WSJT-X UDP broadcast port
 
 With an ADIF logbook loaded, jtwatch flags contacts whose entity, CQ zone, or country you have not yet worked as **NEEDED** and rings the terminal bell. Optional regex watchlists let you flag specific callsigns or message patterns. External alerts can be sent via a custom script or [ntfy.sh](https://ntfy.sh) push notifications.
 
+### Note: Tested with WSJT-X 3.1.0 Improved
+
 ## Features
 
 - Zero dependencies — Python standard library only
