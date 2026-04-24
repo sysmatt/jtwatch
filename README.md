@@ -10,8 +10,10 @@ With an ADIF logbook loaded, jtwatch flags contacts whose entity, CQ zone, or co
 - Auto-downloads and caches `cty.dat` on first run
 - ADIF log comparison with per-category worked/needed status
 - Regex watchlists for callsigns and full decoded messages
-- External alerting via script (`--alert-command`) or ntfy.sh push (`--alert-ntfy`)
+- Built-in `--pota`, `--sota`, `--iota` flags to match activations without a watchlist file
+- External alerting via script (`--alert-command`) or ntfy.sh push (`--alert-ntfy TOPIC`)
 - Deduplicates alerts within a run — no repeated notifications for the same event
+- ADIF log auto-reloads when the file changes — no restart needed after logging a QSO
 - Interactive call prompt — answer yes and jtwatch sends a WSJT-X Reply (Type 4) UDP message to start TX automatically
 - Optional ANSI color output (`--color`) for at-a-glance status scanning
 - Fixed-width columnar output for easy terminal scanning
@@ -123,7 +125,7 @@ Pass `--color` to enable ANSI color coding for at-a-glance scanning:
 
 ```bash
 jtwatch --adif ~/wsjtx_log.adi --color
-jtwatch --adif ~/wsjtx_log.adi --color --alert-ntfy --ntfy-topic my-ham-alerts
+jtwatch --adif ~/wsjtx_log.adi --color --alert-ntfy my-ham-alerts
 ```
 
 ## ADIF / NEEDED Mode
@@ -143,6 +145,8 @@ jtwatch builds three worked sets from the log:
 Any CQ from a callsign whose entity, zone, or country is **not** in the log is flagged with `*** NEEDED: ... ***` and the terminal bell rings (`\a`).
 
 Already-worked contacts show `[worked dxcc]`, `[worked dxcc cqz country]`, etc. — listing only the categories that are both enabled and matched.
+
+The ADIF file is checked for changes on every received packet. If WSJT-X logs a new QSO while jtwatch is running, the log reloads automatically — no restart required.
 
 ### Disabling individual NEEDED checks
 
@@ -180,25 +184,28 @@ Example `dx_watchlist.txt`:
 
 ### `--match-message FILE [FILE ...]`
 
-Same file format, but patterns are tested against the **full decoded message string** (e.g. `CQ POTA W1ABC FN42`). Matches are flagged `*** MATCH: MSG:<pattern> ***` (note the `MSG:` prefix, vs `CALL:` for callsign patterns). Useful for catching activity modifiers:
+Same file format, but patterns are tested against the **full decoded message string** (e.g. `CQ POTA W1ABC FN42`). Matches are flagged `*** MATCH: MSG:<pattern> ***` (note the `MSG:` prefix, vs `CALL:` for callsign patterns). Useful for catching activity modifiers or any other text in the decoded message.
 
 ```bash
 jtwatch --match-message activations.txt
 ```
 
-Example `activations.txt`:
+### `--pota` / `--sota` / `--iota`
 
-```
-# SOTA and POTA activations
-\bSOTA\b
-\bPOTA\b
-\bIOTA\b
+Shorthand flags that inject the corresponding `\bPOTA\b`, `\bSOTA\b`, or `\bIOTA\b` message pattern without needing a file. Each flag behaves identically to having that pattern in a `--match-message` file.
+
+```bash
+# Alert on any POTA or SOTA activation
+jtwatch --pota --sota
+
+# Combine with ADIF and ntfy alerts
+jtwatch --adif ~/wsjtx_log.adi --pota --sota --iota --alert-ntfy my-ham-alerts
 ```
 
 A POTA activation would appear as:
 
 ```
-120215z  SNR  +30 dB  dt   +1.0s   2899 Hz  [FT8 ]  CQ POTA VK2ABC QF56       VK2ABC        QF56    | Australia                       CQ29  ITU59  OC  *** MATCH: MSG:\bPOTA\b ***
+120215z   +30 dB    +1.0s   2899 Hz  [FT8 ]  CQ POTA VK2ABC QF56       VK2ABC        QF56    | Australia                       CQ29  ITU59  OC  *** MATCH: MSG:\bPOTA\b ***
 ```
 
 ### Pattern file format
@@ -235,15 +242,13 @@ Example `ham_alert.sh`:
 notify-send "jtwatch" "$1"
 ```
 
-### `--alert-ntfy` + `--ntfy-topic TOPIC`
+### `--alert-ntfy TOPIC`
 
 POSTs the alert message to `https://ntfy.sh/TOPIC`. Install the ntfy app on your phone and subscribe to the same topic to receive push notifications.
 
 ```bash
-jtwatch --adif ~/wsjtx_log.adi --alert-ntfy --ntfy-topic my-ham-alerts
+jtwatch --adif ~/wsjtx_log.adi --alert-ntfy my-ham-alerts
 ```
-
-`--ntfy-topic` is required when `--alert-ntfy` is set; jtwatch will exit with an error if it is omitted.
 
 #### ntfy.sh resources
 
@@ -252,7 +257,7 @@ jtwatch --adif ~/wsjtx_log.adi --alert-ntfy --ntfy-topic my-ham-alerts
 - **Android app (F-Droid):** [https://f-droid.org/en/packages/io.heckel.ntfy/](https://f-droid.org/en/packages/io.heckel.ntfy/)
 - **iPhone/iPad app (App Store):** [https://apps.apple.com/us/app/ntfy/id1625396347](https://apps.apple.com/us/app/ntfy/id1625396347)
 
-ntfy.sh is a free, open-source pub/sub notification service — no account required for basic use. Pick any topic name (e.g. `my-ham-alerts`), subscribe to it in the app, and any POST to `https://ntfy.sh/<topic>` will push to your device instantly. Choose an obscure topic name to avoid receiving messages from others. Your callsign makes a natural choice — e.g. `--ntfy-topic W1ABC-jtwatch`.
+ntfy.sh is a free, open-source pub/sub notification service — no account required for basic use. Pick any topic name (e.g. `my-ham-alerts`), subscribe to it in the app, and any POST to `https://ntfy.sh/<topic>` will push to your device instantly. Choose an obscure topic name to avoid receiving messages from others. Your callsign makes a natural choice — e.g. `--alert-ntfy W1ABC-jtwatch`.
 
 Both `--alert-command` and `--alert-ntfy` can be used simultaneously.
 
@@ -276,7 +281,7 @@ jtwatch --adif ~/wsjtx_log.adi --call
 jtwatch --adif ~/wsjtx_log.adi --call --call-timeout 8
 
 # Combine with ntfy so your phone buzzes at the same time
-jtwatch --adif ~/wsjtx_log.adi --call --alert-ntfy --ntfy-topic my-ham-alerts
+jtwatch --adif ~/wsjtx_log.adi --call --alert-ntfy my-ham-alerts
 ```
 
 Each callsign is prompted at most once per run. If the same station calls CQ repeatedly, you won't be asked again. The prompt is suppressed entirely when stdin is not a terminal (piped or scripted runs).
@@ -335,9 +340,11 @@ Each line is a complete JSON object:
 | `--no-need-country` | — | Disable country name NEEDED check |
 | `--match-calls FILE [...]` | — | Callsign regex watchlist file(s) |
 | `--match-message FILE [...]` | — | Full-message regex watchlist file(s) |
+| `--pota` | off | Flag CQ POTA calls as MATCH (no file required) |
+| `--sota` | off | Flag CQ SOTA calls as MATCH (no file required) |
+| `--iota` | off | Flag CQ IOTA calls as MATCH (no file required) |
 | `--alert-command SCRIPT` | — | Script to call on NEEDED/MATCH events |
-| `--alert-ntfy` | off | Send push alerts via ntfy.sh |
-| `--ntfy-topic TOPIC` | — | ntfy.sh topic (required with `--alert-ntfy`) |
+| `--alert-ntfy TOPIC` | — | POST push alerts to ntfy.sh topic TOPIC |
 | `--call` | off | Prompt to call on NEEDED/MATCH events |
 | `--call-timeout SECONDS` | `15` | Seconds before call prompt auto-answers no |
 | `--color` | off | Colorize output with ANSI escape codes |

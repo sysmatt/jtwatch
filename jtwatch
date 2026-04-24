@@ -53,9 +53,11 @@ Options
                               matching messages are flagged *** MATCH *** and ring the bell
   --alert-command SCRIPT      Script to exec on NEEDED/MATCH events; alert message is arg 1.
                               Duplicate events (same call + same flags) are suppressed.
-  --alert-ntfy                Send NEEDED/MATCH alerts to ntfy.sh (requires --ntfy-topic).
+  --alert-ntfy TOPIC          POST NEEDED/MATCH alerts to ntfy.sh topic TOPIC.
                               Duplicate events are suppressed for the lifetime of the run.
-  --ntfy-topic TOPIC          ntfy.sh topic to publish to (required with --alert-ntfy)
+  --pota                      Flag CQ POTA calls as MATCH (no file required).
+  --sota                      Flag CQ SOTA calls as MATCH (no file required).
+  --iota                      Flag CQ IOTA calls as MATCH (no file required).
   --call                      On NEEDED/MATCH events, prompt "Do you want to call <call>? [Y/n]".
                               Pressing Enter defaults to yes; times out to no after --call-timeout
                               seconds. Each callsign is prompted at most once per run.
@@ -305,7 +307,7 @@ def _send_alerts(msg: str, args: argparse.Namespace) -> None:
     if args.alert_ntfy:
         try:
             req = urllib.request.Request(
-                f"https://ntfy.sh/{args.ntfy_topic}",
+                f"https://ntfy.sh/{args.alert_ntfy}",
                 data=msg.encode("utf-8"),
                 method="POST",
             )
@@ -950,6 +952,12 @@ examples:
         help="File(s) containing full decoded-message regex patterns (one per line, # = comment). "
              "Matching messages are flagged *** MATCH *** and ring the bell.",
     )
+    parser.add_argument("--pota", action="store_true",
+                        help="Flag CQ POTA calls as *** MATCH *** (no file required).")
+    parser.add_argument("--sota", action="store_true",
+                        help="Flag CQ SOTA calls as *** MATCH *** (no file required).")
+    parser.add_argument("--iota", action="store_true",
+                        help="Flag CQ IOTA calls as *** MATCH *** (no file required).")
 
     # External alerting
     parser.add_argument(
@@ -958,13 +966,9 @@ examples:
              "Duplicate events (same callsign + same flags) are suppressed for this run.",
     )
     parser.add_argument(
-        "--alert-ntfy", action="store_true",
-        help="POST NEEDED/MATCH alerts to ntfy.sh (requires --ntfy-topic). "
+        "--alert-ntfy", metavar="TOPIC",
+        help="POST NEEDED/MATCH alerts to ntfy.sh topic TOPIC. "
              "Duplicate events are suppressed for this run.",
-    )
-    parser.add_argument(
-        "--ntfy-topic", metavar="TOPIC",
-        help="ntfy.sh topic to publish to; required when --alert-ntfy is set.",
     )
 
     # Interactive call prompt
@@ -986,9 +990,6 @@ examples:
     )
 
     args = parser.parse_args()
-
-    if args.alert_ntfy and not args.ntfy_topic:
-        parser.error("--ntfy-topic is required when using --alert-ntfy")
 
     # ── cty.dat ───────────────────────────────────────────────────────────────
     cty_path = Path(args.cty)
@@ -1015,14 +1016,17 @@ examples:
         print("[cty.dat] File not found — entity info will be blank.", file=sys.stderr)
 
     # ── ADIF log ──────────────────────────────────────────────────────────────
-    adif_log = None
+    adif_log  = None
+    adif_path = None
+    adif_mtime: float | None = None
     if args.adif:
         adif_path = Path(args.adif)
         if not adif_path.exists():
             print(f"[adif] File not found: {adif_path}", file=sys.stderr)
             sys.exit(1)
         try:
-            adif_log = AdifLog(adif_path, cty)
+            adif_log   = AdifLog(adif_path, cty)
+            adif_mtime = adif_path.stat().st_mtime
         except Exception as exc:
             print(f"[adif] Failed to load: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -1063,6 +1067,10 @@ examples:
             f"{', '.join(args.match_message)}",
             file=sys.stderr,
         )
+    for flag, keyword in ((args.pota, "POTA"), (args.sota, "SOTA"), (args.iota, "IOTA")):
+        if flag:
+            msg_patterns.append(re.compile(rf"\b{keyword}\b", re.IGNORECASE))
+            print(f"[match-message] {keyword} pattern active", file=sys.stderr)
 
     # ── JSON output ───────────────────────────────────────────────────────────
     json_fh = None
@@ -1113,6 +1121,17 @@ examples:
     try:
         while True:
             data, wsjt_addr = sock.recvfrom(65535)
+
+            if adif_path is not None:
+                try:
+                    mtime = adif_path.stat().st_mtime
+                    if mtime != adif_mtime:
+                        adif_mtime = mtime
+                        adif_log = AdifLog(adif_path, cty)
+                        print("[adif] File changed — reloaded.", file=sys.stderr)
+                except OSError:
+                    pass
+
             printed = handle_packet(data, args, cty, adif_log, json_fh,
                                     call_patterns, msg_patterns, alerted, prompted,
                                     tx_sock, wsjt_addr)
