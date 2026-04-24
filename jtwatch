@@ -677,24 +677,24 @@ def handle_packet(
       • append a JSON record to json_fh if --save was given
     """
     if len(data) < 12:
-        return
+        return False
 
     r = Reader(data)
     try:
         if r.u32() != MAGIC:
-            return
+            return False
         r.u32()                        # schema version — not used
         if r.u32() != MSG_DECODE:
-            return
+            return False
         decoded = parse_decode_msg(r)
     except (ValueError, struct.error):
-        return
+        return False
 
     msg_text = decoded.get("message", "").strip()
     is_cq    = msg_text.upper().startswith("CQ")
 
     if not is_cq and not args.raw:
-        return
+        return False
 
     # ── Parse CQ message ──────────────────────────────────────────────────────
     callsign = grid = modifier = None
@@ -766,8 +766,8 @@ def handle_packet(
         cols.append(_col(f"[{datetime.now().strftime('%H:%M:%S')}]", _DIM, color))
 
     cols.append(_col(period_utc,           _DIM, color))
-    cols.append(_col(f"SNR {snr:+4d} dB", _DIM, color))
-    cols.append(_col(f"dt {dt:+6.1f}s",   _DIM, color))
+    cols.append(_col(f"{snr:+4d} dB", _DIM, color))
+    cols.append(_col(f"{dt:+6.1f}s",  _DIM, color))
     cols.append(_col(f"{df:5d} Hz",        _DIM, color))
     cols.append(_col(f"[{mode:<4}]",       _DIM, color))
 
@@ -846,10 +846,34 @@ def handle_packet(
         json_fh.write(json.dumps(record) + "\n")
         json_fh.flush()
 
+    return True
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Entry point
 # ══════════════════════════════════════════════════════════════════════════════
+
+_HEADER_EVERY = 15
+
+
+def _print_header(args: argparse.Namespace) -> None:
+    """Print the column header and separator to stdout, matching actual data widths."""
+    parts = []
+    if args.show_time:
+        parts.append(f"{'[time]':<10}")       # "[HH:MM:SS]" = 10 chars
+    parts.append(f"{'HHMMSSZ':<7}")            # period_utc  = 7 chars
+    parts.append(f"{'dB':>7}")                 # f"{snr:+4d} dB" = 7 chars
+    parts.append(f"{'dt(s)':>7}")              # f"{dt:+6.1f}s"  = 7 chars
+    parts.append(f"{'Hz':>8}")                 # f"{df:5d} Hz"   = 8 chars
+    parts.append(f"{'[mode]':<6}")             # f"[{mode:<4}]"  = 6 chars
+    parts.append(f"{'message':<{_W_MSG}}")
+    parts.append(f"{'callsign':<{_W_CALL}}")
+    parts.append(f"{'grid':<{_W_GRID}}")
+    # entity cols: "| " + entity(30) + "  CQz  "(7) + " ITUz  "(7) + " ct"(3)
+    parts.append(f"| {'entity':<30}  CQz   ITUz   ct")
+    print("  ".join(parts), flush=True)
+    print("-" * 120, flush=True)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -1081,24 +1105,21 @@ examples:
             "'Accept UDP requests' checked.",
             file=sys.stderr,
         )
-    msg_hdr  = f"{'message':<{_W_MSG}}"
-    call_hdr = f"{'callsign':<{_W_CALL}}"
-    grid_hdr = f"{'grid':<{_W_GRID}}"
-    print(
-        f"\nFormat:  HHMMSSZ  SNR +XXX dB  dt +XX.Xs  XXXXX Hz  [MODE]  "
-        f"{msg_hdr}  {call_hdr}  {grid_hdr}"
-        f"  | entity                              CQz  ITUz  cont  [status]",
-        file=sys.stderr,
-    )
-    print("-" * 130, file=sys.stderr)
+    print()
+    _print_header(args)
 
     # ── Main receive loop ─────────────────────────────────────────────────────
+    line_count = 0
     try:
         while True:
             data, wsjt_addr = sock.recvfrom(65535)
-            handle_packet(data, args, cty, adif_log, json_fh,
-                          call_patterns, msg_patterns, alerted, prompted,
-                          tx_sock, wsjt_addr)
+            printed = handle_packet(data, args, cty, adif_log, json_fh,
+                                    call_patterns, msg_patterns, alerted, prompted,
+                                    tx_sock, wsjt_addr)
+            if printed:
+                line_count += 1
+                if line_count % _HEADER_EVERY == 0:
+                    _print_header(args)
     except KeyboardInterrupt:
         print("\nStopped.", file=sys.stderr)
     finally:
