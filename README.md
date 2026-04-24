@@ -243,7 +243,7 @@ jtwatch --adif ~/wsjtx_log.adi --alert-ntfy --ntfy-topic my-ham-alerts
 - **Android app (F-Droid):** [https://f-droid.org/en/packages/io.heckel.ntfy/](https://f-droid.org/en/packages/io.heckel.ntfy/)
 - **iPhone/iPad app (App Store):** [https://apps.apple.com/us/app/ntfy/id1625396347](https://apps.apple.com/us/app/ntfy/id1625396347)
 
-ntfy.sh is a free, open-source pub/sub notification service — no account required for basic use. Pick any topic name (e.g. `my-ham-alerts`), subscribe to it in the app, and any POST to `https://ntfy.sh/<topic>` will push to your device instantly. Choose an obscure topic name to avoid receiving messages from others.
+ntfy.sh is a free, open-source pub/sub notification service — no account required for basic use. Pick any topic name (e.g. `my-ham-alerts`), subscribe to it in the app, and any POST to `https://ntfy.sh/<topic>` will push to your device instantly. Choose an obscure topic name to avoid receiving messages from others. Your callsign makes a natural choice — e.g. `--ntfy-topic W1ABC-jtwatch`.
 
 Both `--alert-command` and `--alert-ntfy` can be used simultaneously.
 
