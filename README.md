@@ -70,7 +70,14 @@ jtwatch --port 2237
 Each line is printed in fixed-width columns:
 
 ```
-HHMMSSZ  SNR +XXX dB  dt +XX.Xs  XXXXX Hz  [MODE]  message                   callsign     grid    | entity                              CQz  ITUz  cont  [status]
+HHMMSSZ   +XX dB    +X.Xs   XXXX Hz  [MODE]  message                   callsign      grid    | entity                              CQz   ITUz   ct
+```
+
+The column header is printed on startup and repeats every 15 lines so it stays visible as output scrolls:
+
+```
+HHMMSSZ       dB    dt(s)        Hz  [mode]  message                   callsign      grid    | entity                              CQz   ITUz   ct
+----------------------------------------------------------------------------------------------------------------------------------------
 ```
 
 Column descriptions:
@@ -78,25 +85,27 @@ Column descriptions:
 | Column | Example | Description |
 |--------|---------|-------------|
 | `HHMMSSZ` | `120145z` | UTC period start time from WSJT-X |
-| `SNR` | `SNR  +12 dB` | Signal-to-noise ratio |
-| `dt` | `dt   +0.2s` | Time offset from period start |
-| `Hz` | ` 1234 Hz` | Audio frequency |
-| `[MODE]` | `[FT8 ]` | Digital mode |
+| `dB` | ` +12 dB` | Signal-to-noise ratio (7 chars) |
+| `dt(s)` | `  +0.2s` | Time offset from period start (7 chars) |
+| `Hz` | `  1234 Hz` | Audio frequency (8 chars) |
+| `[MODE]` | `[FT8 ]` | Digital mode (6 chars) |
 | `message` | `CQ DX W1ABC FN42` | Full decoded message (24 chars) |
 | `callsign` | `W1ABC` | Extracted callsign (12 chars) |
 | `grid` | `FN42` | Maidenhead grid square (6 chars) |
 | `entity` | `United States` | DXCC entity from cty.dat |
 | `CQz` | `CQ5` | CQ zone |
 | `ITUz` | `ITU8` | ITU zone |
-| `cont` | `NA` | Continent |
+| `ct` | `NA` | Continent (2-char code) |
 | `[status]` | `[worked dxcc cqz country]` | Worked/NEEDED/MATCH status |
 
 Sample output:
 
 ```
-120145z  SNR  +12 dB  dt   +0.2s   1234 Hz  [FT8 ]  CQ DX W1ABC FN42          W1ABC         FN42    | United States                   CQ5   ITU8   NA  [worked dxcc cqz country]
-120200z  SNR   -5 dB  dt   -1.1s    234 Hz  [FT4 ]  CQ W2XYZ                  W2XYZ                 | Germany                         CQ14  ITU28  EU  *** NEEDED: NEW-DXCC(DL) ***
-120215z  SNR  +30 dB  dt   +1.0s   2899 Hz  [FT8 ]  CQ POTA VK2ABC QF56       VK2ABC        QF56    | Australia                       CQ29  ITU59  OC  *** MATCH: CALL:VK2ABC ***
+HHMMSSZ       dB    dt(s)        Hz  [mode]  message                   callsign      grid    | entity                              CQz   ITUz   ct
+----------------------------------------------------------------------------------------------------------------------------------------
+120145z   +12 dB    +0.2s   1234 Hz  [FT8 ]  CQ DX W1ABC FN42          W1ABC         FN42    | United States                   CQ5   ITU8   NA  [worked dxcc cqz country]
+120200z    -5 dB    -1.1s    234 Hz  [FT4 ]  CQ W2XYZ                  W2XYZ                 | Germany                         CQ14  ITU28  EU  *** NEEDED: NEW-DXCC(DL) ***
+120215z   +30 dB    +1.0s   2899 Hz  [FT8 ]  CQ POTA VK2ABC QF56       VK2ABC        QF56    | Australia                       CQ29  ITU59  OC  *** MATCH: CALL:VK2ABC ***
 ```
 
 ### Color output (`--color`)
@@ -105,7 +114,7 @@ Pass `--color` to enable ANSI color coding for at-a-glance scanning:
 
 | Element | Color | Rationale |
 |---------|-------|-----------|
-| Time, SNR, dt, Hz, mode | dim | Reference data — de-emphasized |
+| Time, dB, dt, Hz, mode | dim | Reference data — de-emphasized |
 | Callsign | bold | Primary identifier |
 | Entity block | cyan | Enrichment data |
 | `[worked ...]` | green | Already in log |
