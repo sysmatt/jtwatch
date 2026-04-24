@@ -92,6 +92,13 @@ CTY_DAT_DEFAULT = Path.home() / ".jtwatch_cty.dat"
 
 BELL = "\a"   # ASCII 0x07 — rings the terminal bell on NEEDED contacts
 
+# WSJT-X v3.x switched from full mode strings ("FT8") to single-byte codes.
+# Map compact codes to human-readable names; unknown codes pass through unchanged.
+_MODE_NAMES = {
+    "~": "FT8",
+    "+": "FT4",
+}
+
 # ANSI color codes — applied only when --color is active
 _RST  = "\033[0m"
 _DIM  = "\033[2m"
@@ -771,7 +778,7 @@ def handle_packet(
     snr  = decoded["snr"]
     dt   = decoded["dt"]
     df   = decoded["df"]
-    mode = decoded["mode"] or "?"
+    mode = _MODE_NAMES.get(decoded["mode"], decoded["mode"]) or "?"
 
     # ── Build the output line (fixed-width columns) ───────────────────────────
     color = args.color
