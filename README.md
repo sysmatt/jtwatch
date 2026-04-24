@@ -27,7 +27,7 @@ With an ADIF logbook loaded, jtwatch flags contacts whose entity, CQ zone, or co
 
 ```bash
 # Clone or download
-git clone https://github.com/youruser/jtwatch.git
+git clone https://github.com/sysmatt/jtwatch.git
 cd jtwatch
 
 # Make executable (Linux/macOS)
@@ -228,13 +228,22 @@ notify-send "jtwatch" "$1"
 
 ### `--alert-ntfy` + `--ntfy-topic TOPIC`
 
-POSTs the alert message to `https://ntfy.sh/TOPIC`. Install the [ntfy app](https://ntfy.sh) on your phone and subscribe to the same topic to receive push notifications.
+POSTs the alert message to `https://ntfy.sh/TOPIC`. Install the ntfy app on your phone and subscribe to the same topic to receive push notifications.
 
 ```bash
 jtwatch --adif ~/wsjtx_log.adi --alert-ntfy --ntfy-topic my-ham-alerts
 ```
 
 `--ntfy-topic` is required when `--alert-ntfy` is set; jtwatch will exit with an error if it is omitted.
+
+#### ntfy.sh resources
+
+- **Website & docs:** [https://ntfy.sh](https://ntfy.sh)
+- **Android app (Google Play):** [https://play.google.com/store/apps/details?id=io.heckel.ntfy](https://play.google.com/store/apps/details?id=io.heckel.ntfy)
+- **Android app (F-Droid):** [https://f-droid.org/en/packages/io.heckel.ntfy/](https://f-droid.org/en/packages/io.heckel.ntfy/)
+- **iPhone/iPad app (App Store):** [https://apps.apple.com/us/app/ntfy/id1625396347](https://apps.apple.com/us/app/ntfy/id1625396347)
+
+ntfy.sh is a free, open-source pub/sub notification service — no account required for basic use. Pick any topic name (e.g. `my-ham-alerts`), subscribe to it in the app, and any POST to `https://ntfy.sh/<topic>` will push to your device instantly. Choose an obscure topic name to avoid receiving messages from others.
 
 Both `--alert-command` and `--alert-ntfy` can be used simultaneously.
 
