@@ -644,7 +644,7 @@ def parse_decode_msg(r: Reader) -> dict:
         "new":      r.bool_(),
         "time_ms":  r.u32(),
         "snr":      r.i32(),
-        "dt":       r.f32(),
+        "dt":       r.f64(),
         "df":       r.u32(),
         "mode":     r.utf8(),
         "message":  r.utf8(),
@@ -686,12 +686,24 @@ def handle_packet(
     try:
         if r.u32() != MAGIC:
             return False
-        r.u32()                        # schema version — not used
+        schema = r.u32()
         if r.u32() != MSG_DECODE:
             return False
         decoded = parse_decode_msg(r)
     except (ValueError, struct.error):
         return False
+
+    if args.debug:
+        print(
+            f"[debug] schema={schema}  len={len(data)}\n"
+            f"[debug] hex: {data.hex()}\n"
+            f"[debug] id={decoded['id']!r}  new={decoded['new']}  "
+            f"time_ms={decoded['time_ms']}  snr={decoded['snr']}\n"
+            f"[debug] dt={decoded['dt']:.3f}  df={decoded['df']}  "
+            f"mode={decoded['mode']!r}  message={decoded['message']!r}\n"
+            f"[debug] low_conf={decoded['low_conf']}  off_air={decoded['off_air']}",
+            file=sys.stderr,
+        )
 
     msg_text = decoded.get("message", "").strip()
     is_cq    = msg_text.upper().startswith("CQ")
@@ -988,6 +1000,10 @@ examples:
         help="Colorize output with ANSI escape codes: signal fields dimmed, "
              "callsign bold, entity block cyan, worked contacts green, "
              "NEEDED alerts bold red, MATCH alerts bold yellow.",
+    )
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Dump raw hex + parsed fields of every Decode packet to stderr.",
     )
 
     args = parser.parse_args()
