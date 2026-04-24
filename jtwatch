@@ -1,0 +1,1112 @@
+#!/usr/bin/env python3
+"""
+jtwatch
+=======
+Listen for WSJT-X UDP broadcasts, print CQ calls to stdout enriched with
+entity / CQ-zone / country / grid info from cty.dat, optionally save as
+newline-delimited JSON, and optionally load an ADIF logbook so that contacts
+whose entity, CQ zone, or country have NOT been worked before are flagged as
+NEEDED (with an ASCII BEL to ring the terminal bell).
+
+Dependencies
+------------
+  None beyond the Python standard library.
+
+First run
+---------
+  cty.dat (the AD1C Big CTY prefix database) is downloaded automatically from
+  country-files.com and cached at ~/.jtwatch_cty.dat.
+  Re-use that file on subsequent runs; refresh it by deleting the cache.
+
+Usage
+-----
+  # Basic live monitor
+  jtwatch
+
+  # ADIF mode — bell + NEEDED flag for new entities/zones/countries
+  jtwatch --adif ~/Documents/wsjtx_log.adi
+
+  # Save every CQ record to a JSON-lines file
+  jtwatch --save cq.jsonl
+
+  # ADIF mode, only alert on new DXCC entities, save output
+  jtwatch --adif ~/wsjtx_log.adi --no-need-cqz --no-need-country --save cq.jsonl
+
+  # Show all decodes (not just CQ) with wall-clock timestamps
+  jtwatch --raw --show-time
+
+Options
+-------
+  --host HOST           UDP bind address           (default: 0.0.0.0)
+  --port PORT           UDP port                   (default: 2237)
+  --show-time           Prepend local wall-clock time HH:MM:SS to every line
+  --raw                 Print ALL decoded messages, not just CQ
+  --save FILE           Append each CQ record as a JSON line to FILE
+  --cty PATH            Path to cty.dat            (default: ~/.jtwatch_cty.dat)
+  --adif FILE           ADIF log file for NEEDED detection
+  --no-need-entity      Disable DXCC-entity NEEDED check
+  --no-need-cqz         Disable CQ-zone NEEDED check
+  --no-need-country     Disable country-name NEEDED check
+  --match-calls FILE [...]    File(s) of callsign regex patterns (one per line);
+                              matching CQs are flagged *** MATCH *** and ring the bell
+  --match-message FILE [...]  File(s) of decoded-message regex patterns (one per line);
+                              matching messages are flagged *** MATCH *** and ring the bell
+  --alert-command SCRIPT      Script to exec on NEEDED/MATCH events; alert message is arg 1.
+                              Duplicate events (same call + same flags) are suppressed.
+  --alert-ntfy                Send NEEDED/MATCH alerts to ntfy.sh (requires --ntfy-topic).
+                              Duplicate events are suppressed for the lifetime of the run.
+  --ntfy-topic TOPIC          ntfy.sh topic to publish to (required with --alert-ntfy)
+  --call                      On NEEDED/MATCH events, prompt "Do you want to call <call>? [Y/n]".
+                              Pressing Enter defaults to yes; times out to no after --call-timeout
+                              seconds. Each callsign is prompted at most once per run.
+  --call-timeout SECONDS      Seconds to wait for a response to the call prompt (default: 15)
+  --color                     Colorize output with ANSI escape codes.
+                              Signal fields are dimmed; callsign is bold; entity block is cyan;
+                              worked contacts are green; NEEDED alerts are bold red;
+                              MATCH alerts are bold yellow.
+"""
+
+import argparse
+import json
+import re
+import select
+import socket
+import struct
+import subprocess
+import sys
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+# ── Constants ──────────────────────────────────────────────────────────────────
+# MAGIC is a constant used to validate WSJT-X UDP packets, it is part of the protocol
+MAGIC      = 0xADBCCBDA
+MSG_DECODE = 2
+MSG_REPLY  = 4
+
+CTY_DAT_URL     = "https://www.country-files.com/cty/cty.dat"
+CTY_DAT_DEFAULT = Path.home() / ".jtwatch_cty.dat"
+
+BELL = "\a"   # ASCII 0x07 — rings the terminal bell on NEEDED contacts
+
+# ANSI color codes — applied only when --color is active
+_RST  = "\033[0m"
+_DIM  = "\033[2m"
+_BOLD = "\033[1m"
+_GRN  = "\033[32m"    # green             — worked status
+_CYN  = "\033[36m"    # cyan              — entity block
+_BRED = "\033[1;31m"  # bold red          — NEEDED alert
+_BYEL = "\033[1;33m"  # bold yellow       — MATCH alert
+
+
+def _col(text: str, code: str, on: bool) -> str:
+    return f"{code}{text}{_RST}" if on else text
+
+
+# Fixed output column widths — keep consistent with the format-header banner in main()
+_W_MSG  = 24   # decoded message text
+_W_CALL = 12   # callsign
+_W_GRID = 6    # grid square (up to 6 chars, e.g. FN42cd)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  cty.dat parser
+#  Parses the AD1C Big CTY prefix database (country-files.com/cty/cty.dat).
+#  No external libraries required.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_OVERRIDE_RE = re.compile(r"[\(\[\{<~][^\)\]\}>~]*[\)\]\}>~]")
+
+
+def _strip_overrides(token: str) -> tuple:
+    """
+    Strip CQ/ITU/continent override annotations from a prefix token.
+    Returns (clean_token, overrides_dict).
+
+    Annotations in cty.dat:
+      (nn)  = CQ zone override
+      [nn]  = ITU zone override
+      {XX}  = continent override
+      <lat/lon>  = lat/lon override (ignored)
+      ~nn   = time-zone offset (ignored)
+    """
+    overrides = {}
+    m = re.search(r"\((\d+)\)", token)
+    if m:
+        overrides["cqz"] = int(m.group(1))
+    m = re.search(r"\[(\d+)\]", token)
+    if m:
+        overrides["ituz"] = int(m.group(1))
+    m = re.search(r"\{([A-Z]+)\}", token)
+    if m:
+        overrides["continent"] = m.group(1)
+    clean = _OVERRIDE_RE.sub("", token).strip()
+    return clean, overrides
+
+
+class CtyDat:
+    """
+    Loads cty.dat and resolves amateur-radio callsigns to DXCC entity info.
+
+    Each entity record in cty.dat looks like:
+      Country Name:  CQz: ITUz: Cont: Lat: Long: UTC: Prefix;
+          prefix1, prefix2, =EXACT1, =EXACT2, ...;
+
+    We build:
+      _exact    : dict  { "CALLSIGN" -> entity_dict }  for exact-match entries
+      _prefixes : list  [ ("PREFIX", entity_dict) ]    sorted longest-first
+    """
+
+    def __init__(self):
+        self._exact:    dict = {}
+        self._prefixes: list = []
+
+    # ── Loading ────────────────────────────────────────────────────────────────
+
+    def load(self, path: Path) -> None:
+        self._parse(path.read_text(encoding="utf-8", errors="replace"))
+
+    def _parse(self, text: str) -> None:
+        # Records start at a non-whitespace character (the country name)
+        for record in re.split(r"\n(?=[A-Z*])", text):
+            lines = record.strip().splitlines()
+            if not lines:
+                continue
+
+            # Header line:  Name:CQz:ITUz:Cont:Lat:Lon:UTC:Prefix;
+            parts = [p.strip() for p in lines[0].split(":")]
+            if len(parts) < 8:
+                continue
+            try:
+                base = {
+                    "country":        parts[0].lstrip("*"),
+                    "cqz":            int(parts[1]),
+                    "ituz":           int(parts[2]),
+                    "continent":      parts[3],
+                    "latitude":       float(parts[4]),
+                    "longitude":      -float(parts[5]),  # cty.dat stores W as +
+                    "primary_prefix": parts[7].rstrip(";").strip(),
+                }
+            except (ValueError, IndexError):
+                continue
+
+            # Prefix/callsign lines (comma-separated, terminated by semicolon)
+            body = " ".join(lines[1:]).split(";")[0]
+            for raw in body.split(","):
+                raw = raw.strip()
+                if not raw:
+                    continue
+                exact = raw.startswith("=")
+                clean, overrides = _strip_overrides(raw.lstrip("="))
+                if not clean:
+                    continue
+                entry = {**base, **overrides}
+                if exact:
+                    self._exact[clean.upper()] = entry
+                else:
+                    self._prefixes.append((clean.upper(), entry))
+
+        # Longest prefix first — greedy match gives best accuracy
+        self._prefixes.sort(key=lambda x: len(x[0]), reverse=True)
+
+    # ── Lookup ─────────────────────────────────────────────────────────────────
+
+    def lookup(self, callsign: str) -> dict | None:
+        """
+        Return entity info dict for *callsign*, or None if not found.
+        Handles portable/rover suffixes (W1ABC/P, HC2/DH1TW, VK9/W1ABC, etc.).
+        """
+        call = callsign.upper().strip()
+
+        # Exact match (handles special callsigns like 3D2/R)
+        if call in self._exact:
+            return dict(self._exact[call])
+
+        # Slash callsigns
+        parts = call.split("/")
+        if len(parts) == 2:
+            a, b = parts
+            portable = {"P", "M", "MM", "AM", "QRP", "QRPP", "A", "B"}
+            if b in portable:
+                call = a                       # W1ABC/P -> W1ABC
+            elif a in portable:
+                call = b                       # P/W1ABC -> W1ABC
+            elif len(a) <= 3 and not a[-1].isdigit():
+                # Short non-numeric prefix suggests country: HC2/DH1TW
+                r = self._prefix_match(a)
+                if r:
+                    return r
+                call = b
+            else:
+                # Keep the longer part
+                call = a if len(a) >= len(b) else b
+
+        return self._prefix_match(call)
+
+    def _prefix_match(self, call: str) -> dict | None:
+        for prefix, entry in self._prefixes:
+            if call.startswith(prefix):
+                return dict(entry)
+        return None
+
+
+def load_regex_patterns(file_paths: list) -> list:
+    """Load compiled regex patterns from one or more files, one pattern per line.
+    Blank lines and lines starting with '#' are ignored."""
+    patterns = []
+    for path_str in file_paths:
+        p = Path(path_str)
+        try:
+            for i, raw in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                try:
+                    patterns.append(re.compile(line, re.IGNORECASE))
+                except re.error as exc:
+                    print(f"[match] {p.name}:{i}: invalid regex {line!r}: {exc}",
+                          file=sys.stderr)
+        except OSError as exc:
+            print(f"[match] Cannot read {p}: {exc}", file=sys.stderr)
+            sys.exit(1)
+    return patterns
+
+
+def _regex_matches(value: str, patterns: list) -> list:
+    """Return pattern strings that match *value* (case-insensitive search)."""
+    return [p.pattern for p in patterns if p.search(value)]
+
+
+def _build_alert_msg(callsign, entity_info: dict,
+                     needed_flags: list, match_flags: list) -> str:
+    """Build a compact one-line summary for external alert delivery."""
+    segments = [callsign or "?"]
+    if entity_info:
+        segments.append(f"{entity_info['entity']} CQ{entity_info['cq_zone']}")
+    flag_parts = []
+    if needed_flags:
+        flag_parts.append("NEEDED: " + ", ".join(needed_flags))
+    if match_flags:
+        flag_parts.append("MATCH: " + ", ".join(match_flags))
+    if flag_parts:
+        segments.append("  ".join(flag_parts))
+    return " | ".join(segments)
+
+
+def _send_alerts(msg: str, args: argparse.Namespace) -> None:
+    """Dispatch an alert message via --alert-command and/or --alert-ntfy."""
+    if args.alert_command:
+        try:
+            subprocess.Popen([args.alert_command, msg])
+        except Exception as exc:
+            print(f"[alert-command] {exc}", file=sys.stderr)
+
+    if args.alert_ntfy:
+        try:
+            req = urllib.request.Request(
+                f"https://ntfy.sh/{args.ntfy_topic}",
+                data=msg.encode("utf-8"),
+                method="POST",
+            )
+            req.add_header("Title", "jtwatch")
+            urllib.request.urlopen(req, timeout=10)
+        except Exception as exc:
+            print(f"[alert-ntfy] {exc}", file=sys.stderr)
+
+
+def _encode_utf8(s: str) -> bytes:
+    """Encode a string as a Qt QDataStream QString (big-endian length + UTF-8 bytes)."""
+    if not s:
+        return struct.pack(">I", 0xFFFFFFFF)
+    b = s.encode("utf-8")
+    return struct.pack(">I", len(b)) + b
+
+
+def _send_reply(tx_sock, wsjt_addr: tuple, decoded: dict) -> None:
+    """
+    Send a WSJT-X Reply (Type 4) message to wsjt_addr.
+
+    This is the protocol equivalent of double-clicking a decode in the WSJT-X
+    UI: WSJT-X will set the DX callsign, generate the appropriate response
+    message, and enable TX.
+
+    Requires "Accept UDP requests" to be checked in WSJT-X
+    Settings → Reporting.
+    """
+    buf = bytearray()
+    buf += struct.pack(">III", MAGIC, 2, MSG_REPLY)   # magic, schema=2, type=Reply
+    buf += _encode_utf8(decoded["id"])
+    buf += struct.pack(">I",  decoded["time_ms"])
+    buf += struct.pack(">i",  decoded["snr"])
+    buf += struct.pack(">d",  decoded["dt"])
+    buf += struct.pack(">I",  decoded["df"])
+    buf += _encode_utf8(decoded["mode"])
+    buf += _encode_utf8(decoded["message"])
+    buf += struct.pack(">B",  1 if decoded.get("low_conf") else 0)
+    buf += struct.pack(">B",  0)                      # Modifiers: none
+    try:
+        tx_sock.sendto(bytes(buf), wsjt_addr)
+    except OSError as exc:
+        print(f"[call] Reply send failed: {exc}", file=sys.stderr)
+
+
+def _prompt_call(callsign: str, timeout: float) -> bool:
+    """
+    Write "Do you want to call <callsign>? [Y/n] " to stderr and wait up to
+    *timeout* seconds for a keystroke.  Returns True on yes/Enter, False on
+    no or timeout.  Silently returns False when stdin is not a TTY.
+    """
+    if not sys.stdin.isatty():
+        return False
+
+    sys.stderr.write(f"\nDo you want to call {callsign}? [Y/n] ")
+    sys.stderr.flush()
+
+    try:
+        ready, _, _ = select.select([sys.stdin], [], [], timeout)
+    except OSError:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+        return False
+
+    if ready:
+        answer = sys.stdin.readline().strip().lower()
+        return answer in ("", "y", "yes")
+
+    sys.stderr.write("(timeout — no)\n")
+    sys.stderr.flush()
+    return False
+
+
+def download_cty(path: Path) -> None:
+    """Download cty.dat from country-files.com and save to *path*."""
+    print(f"[cty.dat] Downloading from {CTY_DAT_URL} …", file=sys.stderr)
+    req = urllib.request.Request(
+        CTY_DAT_URL, headers={"User-Agent": "jtwatch/1.0"}
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        path.write_bytes(resp.read())
+    print(f"[cty.dat] Saved to {path}", file=sys.stderr)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ADIF parser + worked-log tracker
+# ══════════════════════════════════════════════════════════════════════════════
+
+_ADIF_FIELD_RE = re.compile(
+    r"<([A-Za-z_][A-Za-z0-9_]*)(?::[^:>]*)?:(\d+)(?::[A-Za-z])?>",
+    re.IGNORECASE,
+)
+_ADIF_EOH_RE = re.compile(r"<EOH>", re.IGNORECASE)
+_ADIF_EOR_RE = re.compile(r"<EOR>", re.IGNORECASE)
+
+
+def parse_adif(path: Path) -> list:
+    """
+    Parse an ADIF file and return a list of QSO dicts.
+    Keys are lower-cased ADIF field names; values are stripped strings.
+    Handles both ADIF 2 and ADIF 3 files, with or without a header.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+
+    # Skip everything before the first <EOH>
+    eoh  = _ADIF_EOH_RE.search(text)
+    body = text[eoh.end():] if eoh else text
+
+    qsos: list = []
+    pos = 0
+    current: dict = {}
+
+    while pos < len(body):
+        m   = _ADIF_FIELD_RE.search(body, pos)
+        eor = _ADIF_EOR_RE.search(body, pos)
+
+        # <EOR> closes the current record
+        if eor and (not m or eor.start() < m.start()):
+            if current:
+                qsos.append(current)
+                current = {}
+            pos = eor.end()
+            continue
+
+        if not m:
+            break
+
+        field  = m.group(1).lower()
+        flen   = int(m.group(2))
+        vstart = m.end()
+        current[field] = body[vstart : vstart + flen].strip()
+        pos = vstart + flen
+
+    if current:
+        qsos.append(current)
+
+    return qsos
+
+
+class AdifLog:
+    """
+    Parses an ADIF file and builds three sets of what has already been worked:
+
+      worked_dxcc    — primary prefixes  e.g. {"W", "DL", "VK", "JA"}
+      worked_cqz     — CQ zone ints      e.g. {5, 14, 28, 29}
+      worked_country — upper-cased country names  e.g. {"UNITED STATES", "GERMANY"}
+
+    Sets are populated from explicit ADIF fields first; if a field is absent
+    the callsign is resolved via cty.dat to fill in the blanks.
+
+    The needed_flags() method checks an incoming entity_info dict against these
+    sets and returns a list of human-readable NEEDED reason strings.
+    """
+
+    def __init__(self, path: Path, cty: CtyDat):
+        self.path = path
+        self.cty  = cty
+
+        self.worked_dxcc:    set = set()
+        self.worked_cqz:     set = set()
+        self.worked_country: set = set()
+        self.total_qsos = 0
+
+        self._load()
+
+    def _load(self) -> None:
+        qsos = parse_adif(self.path)
+        self.total_qsos = len(qsos)
+
+        for q in qsos:
+            call    = q.get("call", "").strip().upper()
+            cqz_raw = (q.get("cqz") or q.get("cq_zone") or "").strip()
+            country = (q.get("country") or q.get("entity") or "").strip().upper()
+
+            # Populate from explicit ADIF fields
+            try:
+                self.worked_cqz.add(int(cqz_raw))
+            except ValueError:
+                pass
+
+            if country:
+                self.worked_country.add(country)
+
+            # Fill missing fields via cty.dat lookup on the callsign
+            if call:
+                info = self.cty.lookup(call)
+                if info:
+                    self.worked_dxcc.add(info["primary_prefix"].upper())
+                    if not cqz_raw:
+                        self.worked_cqz.add(info["cqz"])
+                    if not country:
+                        self.worked_country.add(info["country"].upper())
+
+        print(
+            f"[adif] Loaded {self.total_qsos} QSOs from {self.path.name}\n"
+            f"[adif]   {len(self.worked_dxcc)} DXCC entities worked\n"
+            f"[adif]   {len(self.worked_cqz)} CQ zones worked\n"
+            f"[adif]   {len(self.worked_country)} countries worked",
+            file=sys.stderr,
+        )
+
+    def needed_flags(self, entity_info: dict, args: argparse.Namespace) -> list:
+        """
+        Return a list of NEEDED reason strings for *entity_info*.
+        Empty list = everything already worked, or checks disabled.
+
+        Possible entries:
+          "NEW-DXCC(prefix)"    primary prefix not in worked_dxcc
+          "NEW-CQZ(n)"          CQ zone not in worked_cqz
+          "NEW-CTRY(name)"      country not in worked_country
+        """
+        flags = []
+        prefix  = (entity_info.get("primary_prefix") or "").upper()
+        cqz     = entity_info.get("cq_zone")           # int or "?"
+        country = (entity_info.get("entity") or "").upper()
+
+        if args.need_entity and prefix and prefix not in self.worked_dxcc:
+            flags.append(f"NEW-DXCC({prefix})")
+
+        if args.need_cqz and isinstance(cqz, int) and cqz not in self.worked_cqz:
+            flags.append(f"NEW-CQZ({cqz})")
+
+        if args.need_country and country and country not in self.worked_country:
+            flags.append(f"NEW-CTRY({entity_info.get('entity', '?')})")
+
+        return flags
+
+    def worked_flags(self, entity_info: dict, args: argparse.Namespace) -> list:
+        """Return which enabled categories in entity_info are already worked."""
+        flags = []
+        prefix  = (entity_info.get("primary_prefix") or "").upper()
+        cqz     = entity_info.get("cq_zone")
+        country = (entity_info.get("entity") or "").upper()
+
+        if args.need_entity and prefix and prefix in self.worked_dxcc:
+            flags.append("dxcc")
+        if args.need_cqz and isinstance(cqz, int) and cqz in self.worked_cqz:
+            flags.append("cqz")
+        if args.need_country and country and country in self.worked_country:
+            flags.append("country")
+
+        return flags
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  CQ message parser
+# ══════════════════════════════════════════════════════════════════════════════
+
+_GRID_RE = re.compile(r"\b([A-R]{2}\d{2}(?:[A-X]{2})?)\b", re.IGNORECASE)
+
+# CQ [MODIFIER] CALLSIGN [GRID]
+# MODIFIER is 2-5 alpha chars: DX, POTA, SOTA, etc.
+_CQ_RE = re.compile(
+    r"^CQ\s+"
+    r"(?:(?P<modifier>[A-Z]{2,5})\s+)?"
+    r"(?P<callsign>[A-Z0-9/]{3,})"
+    r"(?:\s+(?P<grid>[A-R]{2}\d{2}(?:[A-X]{2})?))?\s*$",
+    re.IGNORECASE,
+)
+
+# Known non-callsign modifiers that appear after CQ
+_KNOWN_MODS = {
+    "DX", "POTA", "SOTA", "IOTA", "WFF", "BOTA", "LOTA", "WWFF",
+    "HF", "VHF", "UHF", "EME", "MSK", "FT8", "FT4", "599",
+}
+
+
+def parse_cq_message(msg: str) -> tuple:
+    """
+    Parse a WSJT-X CQ message string.
+    Returns (callsign, gridsquare, modifier) — any element may be None.
+
+    Examples:
+      "CQ W1ABC FN42"       -> ("W1ABC", "FN42", None)
+      "CQ DX K7XYZ DM41"   -> ("K7XYZ", "DM41", "DX")
+      "CQ POTA N3ZZZ EN91" -> ("N3ZZZ", "EN91", "POTA")
+      "CQ W1ABC"            -> ("W1ABC", None, None)
+    """
+    msg = msg.strip()
+    if not msg.upper().startswith("CQ"):
+        return None, None, None
+
+    m = _CQ_RE.match(msg)
+    if not m:
+        return None, None, None
+
+    modifier = (m.group("modifier") or "").upper()
+    callsign = (m.group("callsign") or "").upper()
+    grid     = (m.group("grid")     or "").upper() or None
+
+    # If "modifier" contains a digit or isn't a known keyword, it's the callsign
+    if modifier and (any(c.isdigit() for c in modifier) or modifier not in _KNOWN_MODS):
+        callsign = modifier
+        modifier = ""
+
+    return callsign or None, grid, modifier or None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Qt binary stream reader  (WSJT-X uses Qt's QDataStream, big-endian)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class Reader:
+    def __init__(self, data: bytes):
+        self.data = data
+        self.pos  = 0
+
+    def _read(self, n: int) -> bytes:
+        if self.pos + n > len(self.data):
+            raise ValueError("Packet underflow")
+        chunk = self.data[self.pos : self.pos + n]
+        self.pos += n
+        return chunk
+
+    def u8(self)    -> int:   return struct.unpack(">B", self._read(1))[0]
+    def u32(self)   -> int:   return struct.unpack(">I", self._read(4))[0]
+    def i32(self)   -> int:   return struct.unpack(">i", self._read(4))[0]
+    def f64(self)   -> float: return struct.unpack(">d", self._read(8))[0]
+    def bool_(self) -> bool:  return self.u8() != 0
+
+    def utf8(self) -> str:
+        """Qt QString: 4-byte length (0xFFFFFFFF = null/empty), then UTF-8 bytes."""
+        n = self.u32()
+        if n == 0xFFFFFFFF:
+            return ""
+        return self._read(n).decode("utf-8", errors="replace")
+
+
+def parse_decode_msg(r: Reader) -> dict:
+    """Parse a WSJT-X Decode message (type 2) from a Reader."""
+    d = {
+        "id":       r.utf8(),
+        "new":      r.bool_(),
+        "time_ms":  r.u32(),
+        "snr":      r.i32(),
+        "dt":       r.f64(),
+        "df":       r.u32(),
+        "mode":     r.utf8(),
+        "message":  r.utf8(),
+        "low_conf": r.bool_(),
+    }
+    try:
+        d["off_air"] = r.bool_()   # schema version ≥ 3 only
+    except ValueError:
+        d["off_air"] = False
+    return d
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Packet handler
+# ══════════════════════════════════════════════════════════════════════════════
+
+def handle_packet(
+    data:          bytes,
+    args:          argparse.Namespace,
+    cty:           CtyDat,
+    adif_log,                   # AdifLog | None
+    json_fh,                    # file object | None
+    call_patterns: list,        # compiled regexes for --match-calls
+    msg_patterns:  list,        # compiled regexes for --match-message
+    alerted:       set,         # dedup set for external alerts (mutated in place)
+    prompted:      set,         # callsigns already prompted this run (mutated in place)
+    tx_sock,                    # unbound UDP socket for sending commands to WSJT-X
+    wsjt_addr:     tuple,       # (host, port) of the WSJT-X instance that sent this packet
+) -> None:
+    """
+    Decode one UDP datagram.  If it's a CQ (or --raw is set):
+      • print a formatted line to stdout (with BELL prefix if NEEDED)
+      • append a JSON record to json_fh if --save was given
+    """
+    if len(data) < 12:
+        return
+
+    r = Reader(data)
+    try:
+        if r.u32() != MAGIC:
+            return
+        r.u32()                        # schema version — not used
+        if r.u32() != MSG_DECODE:
+            return
+        decoded = parse_decode_msg(r)
+    except (ValueError, struct.error):
+        return
+
+    msg_text = decoded.get("message", "").strip()
+    is_cq    = msg_text.upper().startswith("CQ")
+
+    if not is_cq and not args.raw:
+        return
+
+    # ── Parse CQ message ──────────────────────────────────────────────────────
+    callsign = grid = modifier = None
+    entity_info: dict = {}
+
+    if is_cq:
+        callsign, grid, modifier = parse_cq_message(msg_text)
+
+        # Fallback: scan the whole message for a grid square
+        if not grid:
+            gm = _GRID_RE.search(msg_text)
+            if gm:
+                grid = gm.group(1).upper()
+
+        # Entity lookup via cty.dat prefix table
+        if callsign:
+            raw = cty.lookup(callsign)
+            if raw:
+                entity_info = {
+                    "primary_prefix": raw.get("primary_prefix", "?"),
+                    "entity":         raw.get("country",        "?"),
+                    "cq_zone":        raw.get("cqz",            "?"),
+                    "itu_zone":       raw.get("ituz",           "?"),
+                    "continent":      raw.get("continent",      "?"),
+                }
+
+    # ── NEEDED check (only when ADIF log is loaded) ────────────────────────────
+    needed_flags: list = []
+    if adif_log and is_cq and entity_info:
+        needed_flags = adif_log.needed_flags(entity_info, args)
+    is_needed = bool(needed_flags)
+
+    # ── Pattern-match checks (--match-calls / --match-message) ────────────────
+    match_flags: list = []
+    if call_patterns and callsign:
+        match_flags.extend(f"CALL:{m}" for m in _regex_matches(callsign, call_patterns))
+    if msg_patterns and msg_text:
+        match_flags.extend(f"MSG:{m}" for m in _regex_matches(msg_text, msg_patterns))
+    is_match = bool(match_flags)
+
+    # ── External alerts (--alert-command / --alert-ntfy) ──────────────────────
+    if (is_needed or is_match) and (args.alert_command or args.alert_ntfy):
+        alert_key = (callsign, frozenset(needed_flags + match_flags))
+        if alert_key not in alerted:
+            alerted.add(alert_key)
+            _send_alerts(
+                _build_alert_msg(callsign, entity_info, needed_flags, match_flags),
+                args,
+            )
+
+    # ── Timestamps ────────────────────────────────────────────────────────────
+    time_ms = decoded["time_ms"]
+    hh = (time_ms // 3_600_000) % 24
+    mm = (time_ms %  3_600_000) // 60_000
+    ss = (time_ms %     60_000) //  1_000
+    period_utc = f"{hh:02d}{mm:02d}{ss:02d}z"
+    wall_utc   = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    snr  = decoded["snr"]
+    dt   = decoded["dt"]
+    df   = decoded["df"]
+    mode = decoded["mode"] or "?"
+
+    # ── Build the output line (fixed-width columns) ───────────────────────────
+    color = args.color
+    cols: list = []
+
+    if args.show_time:
+        cols.append(_col(f"[{datetime.now().strftime('%H:%M:%S')}]", _DIM, color))
+
+    cols.append(_col(period_utc,           _DIM, color))
+    cols.append(_col(f"SNR {snr:+4d} dB", _DIM, color))
+    cols.append(_col(f"dt {dt:+6.1f}s",   _DIM, color))
+    cols.append(_col(f"{df:5d} Hz",        _DIM, color))
+    cols.append(_col(f"[{mode:<4}]",       _DIM, color))
+
+    cols.append(f"{msg_text:<{_W_MSG}}")             # _W_MSG chars, always padded
+
+    # Callsign and grid are always emitted (blank when absent) so the entity
+    # column stays at a consistent horizontal position on every line.
+    call_col = callsign if (is_cq and callsign) else ""
+    call_str = f"{call_col:<{_W_CALL}}"
+    cols.append(_col(call_str, _BOLD, color) if call_col else call_str)
+
+    grid_col = grid if grid else ""
+    cols.append(f"{grid_col:<{_W_GRID}}")
+
+    if entity_info:
+        entity_str = (
+            f"| {entity_info['entity']:<30}"
+            f"  CQ{entity_info['cq_zone']:<3}"
+            f" ITU{entity_info['itu_zone']:<3}"
+            f" {entity_info['continent']:<2}"
+        )
+        cols.append(_col(entity_str, _CYN, color))
+
+    # Status: NEEDED flags, worked indicator, and/or pattern-match flags
+    status_parts: list = []
+    if adif_log and is_cq:
+        if needed_flags:
+            s = f"*** NEEDED: {', '.join(needed_flags)} ***"
+            status_parts.append(_col(s, _BRED, color))
+        elif entity_info:
+            wf = adif_log.worked_flags(entity_info, args)
+            s = f"[worked {' '.join(wf)}]" if wf else "[worked]"
+            status_parts.append(_col(s, _GRN, color))
+    if match_flags:
+        s = f"*** MATCH: {', '.join(match_flags)} ***"
+        status_parts.append(_col(s, _BYEL, color))
+    if status_parts:
+        cols.append("  ".join(status_parts))
+
+    line = "  ".join(cols)
+
+    # Emit BELL before the line so it sounds as the text appears
+    if is_needed or is_match:
+        print(BELL + line, flush=True)
+    else:
+        print(line, flush=True)
+
+    # ── Interactive call prompt (--call) ──────────────────────────────────────
+    if (is_needed or is_match) and args.call and callsign and callsign not in prompted:
+        prompted.add(callsign)
+        if _prompt_call(callsign, args.call_timeout):
+            sys.stderr.write(f"[call] Sending reply to {callsign} and enabling TX\n")
+            sys.stderr.flush()
+            _send_reply(tx_sock, wsjt_addr, decoded)
+
+    # ── JSON record ───────────────────────────────────────────────────────────
+    if json_fh and is_cq:
+        record = {
+            "wall_utc":       wall_utc,
+            "period_utc":     period_utc,
+            "snr_db":         snr,
+            "dt_s":           round(dt, 2),
+            "df_hz":          df,
+            "mode":           mode,
+            "message":        msg_text,
+            "callsign":       callsign,
+            "modifier":       modifier or None,
+            "gridsquare":     grid or None,
+            "primary_prefix": entity_info.get("primary_prefix"),
+            "entity":         entity_info.get("entity"),
+            "cq_zone":        entity_info.get("cq_zone"),
+            "itu_zone":       entity_info.get("itu_zone"),
+            "continent":      entity_info.get("continent"),
+            "needed":         needed_flags if adif_log else None,
+        }
+        json_fh.write(json.dumps(record) + "\n")
+        json_fh.flush()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Entry point
+# ══════════════════════════════════════════════════════════════════════════════
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Monitor WSJT-X CQ calls via UDP.\n"
+            "Enriches output with DXCC entity / CQ zone / country / grid.\n"
+            "With --adif, flags and bells NEEDED contacts not yet in your log."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+examples:
+  jtwatch
+  jtwatch --adif ~/Documents/wsjtx_log.adi
+  jtwatch --adif ~/wsjtx_log.adi --save cq.jsonl
+  jtwatch --adif ~/wsjtx_log.adi --no-need-cqz --no-need-country
+  jtwatch --raw --show-time --port 2237
+  jtwatch --match-calls watchlist.txt
+  jtwatch --match-calls rare_dx.txt pota.txt --match-message sota.txt
+        """,
+    )
+
+    # Network
+    parser.add_argument("--host", default="0.0.0.0",
+                        help="UDP bind address (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=2237,
+                        help="UDP port matching WSJT-X Settings → Reporting (default: 2237)")
+
+    # Display
+    parser.add_argument("--show-time", action="store_true",
+                        help="Prepend local wall-clock HH:MM:SS to each line")
+    parser.add_argument("--raw", action="store_true",
+                        help="Print ALL decoded messages, not just CQ")
+
+    # Output file
+    parser.add_argument("--save", metavar="FILE",
+                        help="Append each CQ record as a JSON line to FILE")
+
+    # Data files
+    parser.add_argument(
+        "--cty", metavar="PATH", default=str(CTY_DAT_DEFAULT),
+        help=(
+            f"Path to cty.dat (default: {CTY_DAT_DEFAULT}). "
+            "Downloaded automatically from country-files.com on first run."
+        ),
+    )
+    parser.add_argument(
+        "--adif", metavar="FILE",
+        help=(
+            "ADIF log file to compare against for NEEDED detection. "
+            "Contacts whose DXCC entity, CQ zone, or country are NOT in the "
+            "log are flagged *** NEEDED *** and trigger an ASCII bell (\\a)."
+        ),
+    )
+
+    # NEEDED toggles — all on by default when --adif is provided
+    parser.add_argument("--no-need-entity",  dest="need_entity",
+                        action="store_false", default=True,
+                        help="Disable NEEDED check for DXCC entity / primary prefix")
+    parser.add_argument("--no-need-cqz",     dest="need_cqz",
+                        action="store_false", default=True,
+                        help="Disable NEEDED check for CQ zone number")
+    parser.add_argument("--no-need-country", dest="need_country",
+                        action="store_false", default=True,
+                        help="Disable NEEDED check for country name")
+
+    # Pattern matching
+    parser.add_argument(
+        "--match-calls", metavar="FILE", nargs="+",
+        help="File(s) containing callsign regex patterns (one per line, # = comment). "
+             "Matching CQs are flagged *** MATCH *** and ring the bell.",
+    )
+    parser.add_argument(
+        "--match-message", metavar="FILE", nargs="+",
+        help="File(s) containing full decoded-message regex patterns (one per line, # = comment). "
+             "Matching messages are flagged *** MATCH *** and ring the bell.",
+    )
+
+    # External alerting
+    parser.add_argument(
+        "--alert-command", metavar="SCRIPT",
+        help="Script to execute on NEEDED/MATCH events; the alert message is passed as argument 1. "
+             "Duplicate events (same callsign + same flags) are suppressed for this run.",
+    )
+    parser.add_argument(
+        "--alert-ntfy", action="store_true",
+        help="POST NEEDED/MATCH alerts to ntfy.sh (requires --ntfy-topic). "
+             "Duplicate events are suppressed for this run.",
+    )
+    parser.add_argument(
+        "--ntfy-topic", metavar="TOPIC",
+        help="ntfy.sh topic to publish to; required when --alert-ntfy is set.",
+    )
+
+    # Interactive call prompt
+    parser.add_argument(
+        "--call", action="store_true",
+        help='On NEEDED/MATCH events, prompt "Do you want to call <callsign>? [Y/n]". '
+             "Enter defaults to yes; times out to no after --call-timeout seconds. "
+             "Each callsign is prompted at most once per run.",
+    )
+    parser.add_argument(
+        "--call-timeout", metavar="SECONDS", type=float, default=15.0,
+        help="Seconds to wait for a response to the --call prompt (default: 15).",
+    )
+    parser.add_argument(
+        "--color", action="store_true",
+        help="Colorize output with ANSI escape codes: signal fields dimmed, "
+             "callsign bold, entity block cyan, worked contacts green, "
+             "NEEDED alerts bold red, MATCH alerts bold yellow.",
+    )
+
+    args = parser.parse_args()
+
+    if args.alert_ntfy and not args.ntfy_topic:
+        parser.error("--ntfy-topic is required when using --alert-ntfy")
+
+    # ── cty.dat ───────────────────────────────────────────────────────────────
+    cty_path = Path(args.cty)
+    if not cty_path.exists():
+        try:
+            download_cty(cty_path)
+        except Exception as exc:
+            print(f"[cty.dat] Download failed: {exc}", file=sys.stderr)
+            print("[cty.dat] Continuing without entity lookup.", file=sys.stderr)
+
+    cty = CtyDat()
+    if cty_path.exists():
+        try:
+            cty.load(cty_path)
+            print(
+                f"[cty.dat] Loaded {len(cty._prefixes)} prefixes + "
+                f"{len(cty._exact)} exact callsigns from {cty_path}",
+                file=sys.stderr,
+            )
+        except Exception as exc:
+            print(f"[cty.dat] Load error: {exc} — entity info will be blank.",
+                  file=sys.stderr)
+    else:
+        print("[cty.dat] File not found — entity info will be blank.", file=sys.stderr)
+
+    # ── ADIF log ──────────────────────────────────────────────────────────────
+    adif_log = None
+    if args.adif:
+        adif_path = Path(args.adif)
+        if not adif_path.exists():
+            print(f"[adif] File not found: {adif_path}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            adif_log = AdifLog(adif_path, cty)
+        except Exception as exc:
+            print(f"[adif] Failed to load: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        checks = [n for flag, n in [
+            (args.need_entity,  "DXCC entity"),
+            (args.need_cqz,     "CQ zone"),
+            (args.need_country, "country"),
+        ] if flag]
+        print(
+            f"[adif] NEEDED checks active: {', '.join(checks) or 'none (all disabled)'}",
+            file=sys.stderr,
+        )
+        print(
+            "[adif] Bell (\\a) will sound and *** NEEDED *** will appear "
+            "for qualifying contacts.",
+            file=sys.stderr,
+        )
+
+    # ── Alert / prompt dedup state ────────────────────────────────────────────
+    alerted:  set = set()   # (callsign, frozenset(flags)) keys already dispatched
+    prompted: set = set()   # callsigns already shown the --call prompt this run
+
+    # ── Pattern files ─────────────────────────────────────────────────────────
+    call_patterns: list = []
+    msg_patterns:  list = []
+    if args.match_calls:
+        call_patterns = load_regex_patterns(args.match_calls)
+        print(
+            f"[match-calls] {len(call_patterns)} pattern(s) loaded from "
+            f"{', '.join(args.match_calls)}",
+            file=sys.stderr,
+        )
+    if args.match_message:
+        msg_patterns = load_regex_patterns(args.match_message)
+        print(
+            f"[match-message] {len(msg_patterns)} pattern(s) loaded from "
+            f"{', '.join(args.match_message)}",
+            file=sys.stderr,
+        )
+
+    # ── JSON output ───────────────────────────────────────────────────────────
+    json_fh = None
+    if args.save:
+        try:
+            json_fh = open(args.save, "a", encoding="utf-8")
+            print(f"[save] Appending JSON records to: {args.save}", file=sys.stderr)
+        except OSError as exc:
+            print(f"[save] Cannot open {args.save}: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    # ── UDP sockets ───────────────────────────────────────────────────────────
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    except AttributeError:
+        pass   # SO_REUSEPORT not available on Windows
+    sock.bind((args.host, args.port))
+
+    # Separate unbound socket for sending commands TO WSJT-X.
+    # An ephemeral source port avoids SO_REUSEPORT ambiguity — packets sent
+    # from this socket route to WSJT-X rather than looping back to ourselves.
+    tx_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+
+    # ── Startup banner ────────────────────────────────────────────────────────
+    label = "all decodes" if args.raw else "CQ calls only"
+    print(f"\nListening on {args.host}:{args.port}  [{label}]", file=sys.stderr)
+    if adif_log:
+        print(
+            f"[adif] {adif_log.total_qsos} QSOs in log — "
+            "bell will ring on NEEDED contacts.",
+            file=sys.stderr,
+        )
+    if args.call:
+        print(
+            "[call] Interactive prompt enabled — will ask before calling on "
+            "NEEDED/MATCH events.\n"
+            "[call] WSJT-X must have Settings → Reporting → "
+            "'Accept UDP requests' checked.",
+            file=sys.stderr,
+        )
+    msg_hdr  = f"{'message':<{_W_MSG}}"
+    call_hdr = f"{'callsign':<{_W_CALL}}"
+    grid_hdr = f"{'grid':<{_W_GRID}}"
+    print(
+        f"\nFormat:  HHMMSSZ  SNR +XXX dB  dt +XX.Xs  XXXXX Hz  [MODE]  "
+        f"{msg_hdr}  {call_hdr}  {grid_hdr}"
+        f"  | entity                              CQz  ITUz  cont  [status]",
+        file=sys.stderr,
+    )
+    print("-" * 130, file=sys.stderr)
+
+    # ── Main receive loop ─────────────────────────────────────────────────────
+    try:
+        while True:
+            data, wsjt_addr = sock.recvfrom(65535)
+            handle_packet(data, args, cty, adif_log, json_fh,
+                          call_patterns, msg_patterns, alerted, prompted,
+                          tx_sock, wsjt_addr)
+    except KeyboardInterrupt:
+        print("\nStopped.", file=sys.stderr)
+    finally:
+        sock.close()
+        tx_sock.close()
+        if json_fh:
+            json_fh.close()
+
+
+if __name__ == "__main__":
+    main()
