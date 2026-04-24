@@ -35,6 +35,9 @@ cd jtwatch
 # Make executable (Linux/macOS)
 chmod +x jtwatch
 
+# Run it, Requires python3 
+./jtwatch
+
 # Optional: put it on your PATH
 sudo ln -s "$PWD/jtwatch" /usr/local/bin/jtwatch
 ```
@@ -69,12 +72,6 @@ jtwatch --port 2237
 
 ## Output Format
 
-Each line is printed in fixed-width columns:
-
-```
-HHMMSSZ   +XX    +X.Xs   XXXX  MODE  message                   callsign      grid    | entity                              CQz   ITUz   ct
-```
-
 The column header is printed on startup and repeats every 15 lines so it stays visible as output scrolls:
 
 ```
@@ -103,7 +100,7 @@ Column descriptions:
 Sample output:
 
 ```
-HHMMSSZ     dB    dt(s)      Hz  mode  message                   callsign      grid    | entity                              CQz   ITUz   ct
+HHMMSSZ     dB    dt(s)    Hz  mode  message                   callsign      grid    | entity                              CQz   ITUz   ct
 ----------------------------------------------------------------------------------------------------------------------------------------
 120145z   +12    +0.2s   1234  FT8   CQ DX W1ABC FN42          W1ABC         FN42    | United States                   CQ5   ITU8   NA  [worked dxcc cqz country]
 120200z    -5    -1.1s    234  FT4   CQ W2XYZ                  W2XYZ                 | Germany                         CQ14  ITU28  EU  *** NEEDED: NEW-DXCC(DL) ***
