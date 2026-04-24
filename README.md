@@ -85,7 +85,7 @@ Column descriptions:
 |--------|---------|-------------|
 | `HHMMSSZ` | `120145z` | UTC period start time from WSJT-X |
 | `dB` | ` +12` | Signal-to-noise ratio (4 chars) |
-| `dt(s)` | `  +0.2s` | Time offset from period start (7 chars) |
+| `dt(s)` | `  +0.2s` | Delta Time offset from period start (7 chars) |
 | `Hz` | `  1234` | Audio frequency (5 chars) |
 | `mode` | `FT8 ` | Digital mode (4 chars) |
 | `message` | `CQ DX W1ABC FN42` | Full decoded message (24 chars) |
