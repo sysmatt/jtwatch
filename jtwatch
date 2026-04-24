@@ -625,6 +625,7 @@ class Reader:
     def u8(self)    -> int:   return struct.unpack(">B", self._read(1))[0]
     def u32(self)   -> int:   return struct.unpack(">I", self._read(4))[0]
     def i32(self)   -> int:   return struct.unpack(">i", self._read(4))[0]
+    def f32(self)   -> float: return struct.unpack(">f", self._read(4))[0]
     def f64(self)   -> float: return struct.unpack(">d", self._read(8))[0]
     def bool_(self) -> bool:  return self.u8() != 0
 
@@ -643,7 +644,7 @@ def parse_decode_msg(r: Reader) -> dict:
         "new":      r.bool_(),
         "time_ms":  r.u32(),
         "snr":      r.i32(),
-        "dt":       r.f64(),
+        "dt":       r.f32(),
         "df":       r.u32(),
         "mode":     r.utf8(),
         "message":  r.utf8(),
@@ -768,10 +769,10 @@ def handle_packet(
         cols.append(_col(f"[{datetime.now().strftime('%H:%M:%S')}]", _DIM, color))
 
     cols.append(_col(period_utc,           _DIM, color))
-    cols.append(_col(f"{snr:+4d} dB", _DIM, color))
+    cols.append(_col(f"{snr:+4d}",     _DIM, color))
     cols.append(_col(f"{dt:+6.1f}s",  _DIM, color))
-    cols.append(_col(f"{df:5d} Hz",        _DIM, color))
-    cols.append(_col(f"[{mode:<4}]",       _DIM, color))
+    cols.append(_col(f"{df:5d}",       _DIM, color))
+    cols.append(_col(f"{mode:<4}",     _DIM, color))
 
     cols.append(f"{msg_text:<{_W_MSG}}")             # _W_MSG chars, always padded
 
@@ -863,18 +864,18 @@ def _print_header(args: argparse.Namespace) -> None:
     parts = []
     if args.show_time:
         parts.append(f"{'[time]':<10}")       # "[HH:MM:SS]" = 10 chars
-    parts.append(f"{'HHMMSSZ':<7}")            # period_utc  = 7 chars
-    parts.append(f"{'dB':>7}")                 # f"{snr:+4d} dB" = 7 chars
+    parts.append(f"{'HHMMSSZ':<7}")            # period_utc      = 7 chars
+    parts.append(f"{'dB':>4}")                 # f"{snr:+4d}"    = 4 chars
     parts.append(f"{'dt(s)':>7}")              # f"{dt:+6.1f}s"  = 7 chars
-    parts.append(f"{'Hz':>8}")                 # f"{df:5d} Hz"   = 8 chars
-    parts.append(f"{'[mode]':<6}")             # f"[{mode:<4}]"  = 6 chars
+    parts.append(f"{'Hz':>5}")                 # f"{df:5d}"      = 5 chars
+    parts.append(f"{'mode':<4}")               # f"{mode:<4}"    = 4 chars
     parts.append(f"{'message':<{_W_MSG}}")
     parts.append(f"{'callsign':<{_W_CALL}}")
     parts.append(f"{'grid':<{_W_GRID}}")
     # entity cols: "| " + entity(30) + "  CQz  "(7) + " ITUz  "(7) + " ct"(3)
     parts.append(f"| {'entity':<30}  CQz   ITUz   ct")
     print("  ".join(parts), flush=True)
-    print("-" * 120, flush=True)
+    print("-" * 112, flush=True)
 
 
 def main() -> None:

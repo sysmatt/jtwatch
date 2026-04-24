@@ -72,13 +72,13 @@ jtwatch --port 2237
 Each line is printed in fixed-width columns:
 
 ```
-HHMMSSZ   +XX dB    +X.Xs   XXXX Hz  [MODE]  message                   callsign      grid    | entity                              CQz   ITUz   ct
+HHMMSSZ   +XX    +X.Xs   XXXX  MODE  message                   callsign      grid    | entity                              CQz   ITUz   ct
 ```
 
 The column header is printed on startup and repeats every 15 lines so it stays visible as output scrolls:
 
 ```
-HHMMSSZ       dB    dt(s)        Hz  [mode]  message                   callsign      grid    | entity                              CQz   ITUz   ct
+HHMMSSZ     dB    dt(s)      Hz  mode  message                   callsign      grid    | entity                              CQz   ITUz   ct
 ----------------------------------------------------------------------------------------------------------------------------------------
 ```
 
@@ -87,10 +87,10 @@ Column descriptions:
 | Column | Example | Description |
 |--------|---------|-------------|
 | `HHMMSSZ` | `120145z` | UTC period start time from WSJT-X |
-| `dB` | ` +12 dB` | Signal-to-noise ratio (7 chars) |
+| `dB` | ` +12` | Signal-to-noise ratio (4 chars) |
 | `dt(s)` | `  +0.2s` | Time offset from period start (7 chars) |
-| `Hz` | `  1234 Hz` | Audio frequency (8 chars) |
-| `[MODE]` | `[FT8 ]` | Digital mode (6 chars) |
+| `Hz` | `  1234` | Audio frequency (5 chars) |
+| `mode` | `FT8 ` | Digital mode (4 chars) |
 | `message` | `CQ DX W1ABC FN42` | Full decoded message (24 chars) |
 | `callsign` | `W1ABC` | Extracted callsign (12 chars) |
 | `grid` | `FN42` | Maidenhead grid square (6 chars) |
@@ -103,11 +103,11 @@ Column descriptions:
 Sample output:
 
 ```
-HHMMSSZ       dB    dt(s)        Hz  [mode]  message                   callsign      grid    | entity                              CQz   ITUz   ct
+HHMMSSZ     dB    dt(s)      Hz  mode  message                   callsign      grid    | entity                              CQz   ITUz   ct
 ----------------------------------------------------------------------------------------------------------------------------------------
-120145z   +12 dB    +0.2s   1234 Hz  [FT8 ]  CQ DX W1ABC FN42          W1ABC         FN42    | United States                   CQ5   ITU8   NA  [worked dxcc cqz country]
-120200z    -5 dB    -1.1s    234 Hz  [FT4 ]  CQ W2XYZ                  W2XYZ                 | Germany                         CQ14  ITU28  EU  *** NEEDED: NEW-DXCC(DL) ***
-120215z   +30 dB    +1.0s   2899 Hz  [FT8 ]  CQ POTA VK2ABC QF56       VK2ABC        QF56    | Australia                       CQ29  ITU59  OC  *** MATCH: CALL:VK2ABC ***
+120145z   +12    +0.2s   1234  FT8   CQ DX W1ABC FN42          W1ABC         FN42    | United States                   CQ5   ITU8   NA  [worked dxcc cqz country]
+120200z    -5    -1.1s    234  FT4   CQ W2XYZ                  W2XYZ                 | Germany                         CQ14  ITU28  EU  *** NEEDED: NEW-DXCC(DL) ***
+120215z   +30    +1.0s   2899  FT8   CQ POTA VK2ABC QF56       VK2ABC        QF56    | Australia                       CQ29  ITU59  OC  *** MATCH: CALL:VK2ABC ***
 ```
 
 ### Color output (`--color`)
@@ -205,7 +205,7 @@ jtwatch --adif ~/wsjtx_log.adi --pota --sota --iota --alert-ntfy my-ham-alerts
 A POTA activation would appear as:
 
 ```
-120215z   +30 dB    +1.0s   2899 Hz  [FT8 ]  CQ POTA VK2ABC QF56       VK2ABC        QF56    | Australia                       CQ29  ITU59  OC  *** MATCH: MSG:\bPOTA\b ***
+120215z   +30    +1.0s   2899  FT8   CQ POTA VK2ABC QF56       VK2ABC        QF56    | Australia                       CQ29  ITU59  OC  *** MATCH: MSG:\bPOTA\b ***
 ```
 
 ### Pattern file format
