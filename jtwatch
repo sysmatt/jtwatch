@@ -566,20 +566,17 @@ class AdifLog:
 _GRID_RE = re.compile(r"\b([A-R]{2}\d{2}(?:[A-X]{2})?)\b", re.IGNORECASE)
 
 # CQ [MODIFIER] CALLSIGN [GRID]
-# MODIFIER is 2-5 alpha chars: DX, POTA, SOTA, etc.
+# MODIFIER is 1-13 alpha chars: DX, POTA, SOTA, JA, NA, contest names, etc.
+# CALLSIGN must contain at least one digit — a universal property of amateur callsigns.
+# This lets the regex distinguish geo/contest qualifiers (all-alpha) from callsigns
+# without a static list, so "CQ JA W1ABC" correctly identifies W1ABC, not JA.
 _CQ_RE = re.compile(
     r"^CQ\s+"
-    r"(?:(?P<modifier>[A-Z]{2,5})\s+)?"
-    r"(?P<callsign>[A-Z0-9/]{3,})"
+    r"(?:(?P<modifier>[A-Z]{1,13})\s+)?"
+    r"(?P<callsign>(?=[A-Z0-9/]*\d)[A-Z0-9/]{3,})"
     r"(?:\s+(?P<grid>[A-R]{2}\d{2}(?:[A-X]{2})?))?\s*$",
     re.IGNORECASE,
 )
-
-# Known non-callsign modifiers that appear after CQ
-_KNOWN_MODS = {
-    "DX", "POTA", "SOTA", "IOTA", "WFF", "BOTA", "LOTA", "WWFF",
-    "HF", "VHF", "UHF", "EME", "MSK", "FT8", "FT4", "599",
-}
 
 
 def parse_cq_message(msg: str) -> tuple:
@@ -591,6 +588,7 @@ def parse_cq_message(msg: str) -> tuple:
       "CQ W1ABC FN42"       -> ("W1ABC", "FN42", None)
       "CQ DX K7XYZ DM41"   -> ("K7XYZ", "DM41", "DX")
       "CQ POTA N3ZZZ EN91" -> ("N3ZZZ", "EN91", "POTA")
+      "CQ JA W1ABC FN42"   -> ("W1ABC", "FN42", "JA")
       "CQ W1ABC"            -> ("W1ABC", None, None)
     """
     msg = msg.strip()
@@ -604,11 +602,6 @@ def parse_cq_message(msg: str) -> tuple:
     modifier = (m.group("modifier") or "").upper()
     callsign = (m.group("callsign") or "").upper()
     grid     = (m.group("grid")     or "").upper() or None
-
-    # If "modifier" contains a digit or isn't a known keyword, it's the callsign
-    if modifier and (any(c.isdigit() for c in modifier) or modifier not in _KNOWN_MODS):
-        callsign = modifier
-        modifier = ""
 
     return callsign or None, grid, modifier or None
 
