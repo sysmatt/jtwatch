@@ -806,29 +806,35 @@ def handle_packet(
         )
         cols.append(_col(entity_str, _CYN, color))
 
-    # Status: NEEDED flags, worked indicator, and/or pattern-match flags
-    status_parts: list = []
-    if adif_log and is_cq:
-        if needed_flags:
-            s = f"*** NEEDED: {', '.join(needed_flags)} ***"
-            status_parts.append(_col(s, _BRED, color))
-        elif entity_info:
-            wf = adif_log.worked_flags(entity_info, args)
-            s = f"[worked {' '.join(wf)}]" if wf else "[worked]"
-            status_parts.append(_col(s, _GRN, color))
-    if match_flags:
-        s = f"*** MATCH: {', '.join(match_flags)} ***"
-        status_parts.append(_col(s, _BYEL, color))
-    if status_parts:
-        cols.append("  ".join(status_parts))
+    # Worked indicator columns — one emoji per enabled check category
+    if adif_log and is_cq and entity_info:
+        wf = set(adif_log.worked_flags(entity_info, args))
+        marks = []
+        if args.need_entity:
+            marks.append("✅" if "dxcc"    in wf else "❌")
+        if args.need_cqz:
+            marks.append("✅" if "cqz"     in wf else "❌")
+        if args.need_country:
+            marks.append("✅" if "country" in wf else "❌")
+        if marks:
+            cols.append(" ".join(marks))
 
     line = "  ".join(cols)
+
+    # NEEDED / MATCH alerts go on a second indented line
+    alert_parts: list = []
+    if adif_log and is_cq and needed_flags:
+        alert_parts.append(_col(f"*** NEEDED: {', '.join(needed_flags)} ***", _BRED, color))
+    if match_flags:
+        alert_parts.append(_col(f"*** MATCH: {', '.join(match_flags)} ***", _BYEL, color))
 
     # Emit BELL before the line so it sounds as the text appears
     if is_needed or is_match:
         print(BELL + line, flush=True)
     else:
         print(line, flush=True)
+    if alert_parts:
+        print("  " + "  ".join(alert_parts), flush=True)
 
     # ── Interactive call prompt (--call) ──────────────────────────────────────
     if (is_needed or is_match) and args.call and callsign and callsign not in prompted:
@@ -871,7 +877,7 @@ def handle_packet(
 _HEADER_EVERY = 15
 
 
-def _print_header(args: argparse.Namespace) -> None:
+def _print_header(args: argparse.Namespace, has_adif: bool = False) -> None:
     """Print the column header and separator to stdout, matching actual data widths."""
     parts = []
     if args.show_time:
@@ -886,8 +892,18 @@ def _print_header(args: argparse.Namespace) -> None:
     parts.append(f"{'grid':<{_W_GRID}}")
     # entity cols: "| " + entity(30) + "  CQz  "(7) + " ITUz  "(7) + " ct"(3)
     parts.append(f"| {'entity':<30}  CQz   ITUz   ct")
+    if has_adif:
+        labels = []
+        if args.need_entity:
+            labels.append("D")
+        if args.need_cqz:
+            labels.append("Z")
+        if args.need_country:
+            labels.append("C")
+        if labels:
+            parts.append(" ".join(labels))
     print("  ".join(parts), flush=True)
-    print("-" * 112, flush=True)
+    print("-" * 120, flush=True)
 
 
 def main() -> None:
@@ -1131,7 +1147,7 @@ examples:
             file=sys.stderr,
         )
     print()
-    _print_header(args)
+    _print_header(args, has_adif=adif_log is not None)
 
     # ── Main receive loop ─────────────────────────────────────────────────────
     line_count = 0
@@ -1155,7 +1171,7 @@ examples:
             if printed:
                 line_count += 1
                 if line_count % _HEADER_EVERY == 0:
-                    _print_header(args)
+                    _print_header(args, has_adif=adif_log is not None)
     except KeyboardInterrupt:
         print("\nStopped.", file=sys.stderr)
     finally:
