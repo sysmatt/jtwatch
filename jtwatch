@@ -798,26 +798,22 @@ def handle_packet(
     cols.append(f"{grid_col:<{_W_GRID}}")
 
     if entity_info:
+        em1 = em2 = em3 = ""
+        if adif_log and is_cq:
+            wf = set(adif_log.worked_flags(entity_info, args))
+            if args.need_entity:
+                em1 = "✅" if "dxcc"    in wf else "❌"
+            if args.need_cqz:
+                em2 = "✅" if "cqz"     in wf else "❌"
+            if args.need_country:
+                em3 = "✅" if "country" in wf else "❌"
         entity_str = (
             f"| {entity_info['entity']:<30}"
-            f"  CQ{entity_info['cq_zone']:<3}"
-            f" ITU{entity_info['itu_zone']:<3}"
-            f" {entity_info['continent']:<2}"
+            f"  {em1}CQ{entity_info['cq_zone']:<3}"
+            f" {em2}ITU{entity_info['itu_zone']:<3}"
+            f" {em3}{entity_info['continent']:<2}"
         )
         cols.append(_col(entity_str, _CYN, color))
-
-    # Worked indicator columns — one emoji per enabled check category
-    if adif_log and is_cq and entity_info:
-        wf = set(adif_log.worked_flags(entity_info, args))
-        marks = []
-        if args.need_entity:
-            marks.append("✅" if "dxcc"    in wf else "❌")
-        if args.need_cqz:
-            marks.append("✅" if "cqz"     in wf else "❌")
-        if args.need_country:
-            marks.append("✅" if "country" in wf else "❌")
-        if marks:
-            cols.append(" ".join(marks))
 
     line = "  ".join(cols)
 
@@ -890,18 +886,11 @@ def _print_header(args: argparse.Namespace, has_adif: bool = False) -> None:
     parts.append(f"{'message':<{_W_MSG}}")
     parts.append(f"{'callsign':<{_W_CALL}}")
     parts.append(f"{'grid':<{_W_GRID}}")
-    # entity cols: "| " + entity(30) + "  CQz  "(7) + " ITUz  "(7) + " ct"(3)
-    parts.append(f"| {'entity':<30}  CQz   ITUz   ct")
-    if has_adif:
-        labels = []
-        if args.need_entity:
-            labels.append("D")
-        if args.need_cqz:
-            labels.append("Z")
-        if args.need_country:
-            labels.append("C")
-        if labels:
-            parts.append(" ".join(labels))
+    # entity block; when --adif active each of CQz/ITUz/ct is prefixed by a 2-cell emoji
+    w = 2 if has_adif and args.need_entity  else 0
+    x = 2 if has_adif and args.need_cqz     else 0
+    y = 2 if has_adif and args.need_country  else 0
+    parts.append(f"| {'entity':<30}  {'':{w}}CQz   {'':{x}}ITUz   {'':{y}}ct")
     print("  ".join(parts), flush=True)
     print("-" * 120, flush=True)
 
