@@ -14,15 +14,16 @@ Optional regex watchlists let you flag specific callsigns or message patterns. E
 
 - Zero external dependencies — Python standard library only (`sqlite3` is bundled with Python)
 - Auto-downloads and caches `cty.dat` on first run
-- ADIF log comparison with per-category worked/needed status
+- ADIF log comparison with per-category worked/needed status; tracks unique callsigns, grid squares, and states worked
 - Regex watchlists for callsigns and full decoded messages
 - Built-in `--pota`, `--sota`, `--iota` flags to match activations without a watchlist file
-- **WAS state matching** — `--match-state` resolves callsigns to their FCC-licensed state via [hamdat](https://github.com/sysmatt/hamdat) and flags matching CQs; adds a `ST` column to every output line
+- **WAS state matching** — `--match-state` resolves callsigns to their FCC-licensed state via [hamdat](https://github.com/sysmatt/hamdat) and flags matching CQs; adds a `ST` column to every output line (Obviously imperfect as an operator might not be working in their home state)
+- **Cycle statistics** — `--stats` prints a `STATS:` summary after each decode cycle with total and CQ decode counts plus running averages split by even/odd slot
 - External alerting via script (`--alert-command`) or ntfy.sh push (`--alert-ntfy TOPIC`)
 - Deduplicates alerts within a run — no repeated notifications for the same event
 - ADIF log auto-reloads when the file changes — no restart needed after logging a QSO
 - Interactive call prompt — answer yes and jtwatch sends a WSJT-X Reply (Type 4) UDP message to start TX automatically
-- Optional ANSI color output (`--color`) for at-a-glance status scanning
+- Optional ANSI color output (`--color`) for at-a-glance status scanning, including per-field green highlighting for previously worked callsigns, grids, and states
 - Fixed-width columnar output for easy terminal scanning
 - Optional JSON-lines output for downstream processing
 - Portable suffix handling (`W1ABC/P`, `HC2/DH1TW`, `VK9/W1ABC`, etc.)
@@ -124,8 +125,10 @@ Pass `--color` to enable ANSI color coding for at-a-glance scanning:
 |---------|-------|-----------|
 | Time, dB, dt, Hz, mode | dim | Reference data — de-emphasized |
 | Callsign | bold | Primary identifier |
+| Callsign | bold green | Callsign appears in your ADIF log (previously worked) |
+| Grid | green | Grid square appears in your ADIF log (previously worked) |
+| `ST` column | green | State has been worked (callsigns from that state in your ADIF log, resolved via hamdat) |
 | Entity block | cyan | Enrichment data |
-| `[worked ...]` | green | Already in log |
 | `*** NEEDED: ... ***` | bold red | Unworked entity/zone/country |
 | `*** MATCH: ... ***` | bold yellow | Watchlist hit |
 
@@ -142,11 +145,28 @@ Load your ADIF logbook to compare incoming CQs against what you have already wor
 jtwatch --adif ~/Documents/wsjtx_log.adi
 ```
 
-jtwatch builds three worked sets from the log:
+jtwatch builds several worked sets from the log:
 
-- **DXCC entity** — primary DXCC prefix (e.g. `W`, `DL`, `VK`)
-- **CQ zone** — zone number (1–40)
-- **Country** — country name string
+| Set | Content | Used for |
+|-----|---------|----------|
+| Callsigns | Every `CALL` field in the log | Bold green callsign in output (`--color`) |
+| Grid squares | Every `GRIDSQUARE` field (first 4 chars) | Green grid in output (`--color`) |
+| States | FCC-licensed state of each worked callsign, resolved via hamdat | Green `ST` column (`--color` + `--match-state`) |
+| DXCC entities | Primary prefix e.g. `W`, `DL`, `VK` | `*** NEEDED ***` detection |
+| CQ zones | Zone number 1–40 | `*** NEEDED ***` detection |
+| Countries | Country name string | `*** NEEDED ***` detection |
+
+On startup, jtwatch reports the count of each set to stderr, for example:
+
+```
+[adif] Loaded 1842 QSOs from wsjtx_log.adi
+[adif]   743 unique callsigns worked
+[adif]   291 grid squares worked
+[adif]   38 states worked
+[adif]   64 DXCC entities worked
+[adif]   18 CQ zones worked
+[adif]   61 countries worked
+```
 
 Any CQ from a callsign whose entity, zone, or country is **not** in the log is flagged with `*** NEEDED: ... ***` and the terminal bell rings (`\a`).
 
@@ -267,6 +287,32 @@ A POTA activation would appear as:
 - Lines starting with `#` are comments
 - Blank lines are ignored
 - Multiple files are merged into a single pattern list
+
+## Cycle Statistics (`--stats`)
+
+Pass `--stats` to print a `STATS:` summary line after each completed decode cycle. The line reports the decode counts for the just-finished cycle and cumulative running averages, with even- and odd-slot totals tracked separately.
+
+```bash
+jtwatch --stats
+jtwatch --adif ~/wsjtx_log.adi --stats --color
+```
+
+Example output:
+
+```
+STATS: 120000z [even]  decodes=47 cq=12  avg: dec=38.2 cq=9.1  even: dec=39.1 cq=9.8  odd: dec=37.4 cq=8.5
+```
+
+| Field | Description |
+|-------|-------------|
+| `120000z [even]` | UTC period time and slot parity of the completed cycle |
+| `decodes=47` | Total decoded signals in that cycle (CQ + non-CQ) |
+| `cq=12` | CQ calls decoded in that cycle |
+| `avg: dec=38.2 cq=9.1` | Running average across all cycles since startup |
+| `even: dec=39.1 cq=9.8` | Running average for even slots only |
+| `odd: dec=37.4 cq=8.5` | Running average for odd slots only |
+
+Slot parity follows the FT8 convention: `(time_ms // 15000) % 2` — even slots at 0 s and 30 s, odd slots at 15 s and 45 s within each minute. FT4 uses 7.5-second slots with the same even/odd alternation. Only fresh decodes (`new=True`) are counted; replayed decodes from waterfall scrolling are ignored.
 
 ## External Alerts
 
@@ -397,6 +443,7 @@ Each line is a complete JSON object:
 | `--iota` | off | Flag CQ IOTA calls as MATCH (no file required) |
 | `--match-state STATES` | — | Comma-separated state abbreviations or file; flags matching FCC-licensed states as MATCH and adds a `ST` column |
 | `--hamdat DB` | `~/.hamdat/hamdat.db` | hamdat SQLite database path (used with `--match-state`) |
+| `--stats` | off | Print a `STATS:` summary line after each decode cycle with decode counts and running averages by even/odd slot |
 | `--alert-command SCRIPT` | — | Script to call on NEEDED/MATCH events |
 | `--alert-ntfy TOPIC` | — | POST push alerts to ntfy.sh topic TOPIC |
 | `--call` | off | Prompt to call on NEEDED/MATCH events |
