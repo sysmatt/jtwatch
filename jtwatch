@@ -117,7 +117,8 @@ _MODE_NAMES = {
 _RST  = "\033[0m"
 _DIM  = "\033[2m"
 _BOLD = "\033[1m"
-_GRN  = "\033[32m"    # green             — worked status
+_GRN  = "\033[32m"    # green             — worked grid / entity block
+_BGRN = "\033[1;32m"  # bold green        — worked callsign
 _CYN  = "\033[36m"    # cyan              — entity block
 _BRED = "\033[1;31m"  # bold red          — NEEDED alert
 _BYEL = "\033[1;33m"  # bold yellow       — MATCH alert
@@ -620,6 +621,8 @@ class AdifLog:
         self.path = path
         self.cty  = cty
 
+        self.worked_calls:   set = set()
+        self.worked_grids:   set = set()
         self.worked_dxcc:    set = set()
         self.worked_cqz:     set = set()
         self.worked_country: set = set()
@@ -635,6 +638,8 @@ class AdifLog:
             call    = q.get("call", "").strip().upper()
             cqz_raw = (q.get("cqz") or q.get("cq_zone") or "").strip()
             country = (q.get("country") or q.get("entity") or "").strip().upper()
+            # Truncate to 4 chars — FT8 transmits 4-char grids; 6-char ADIF values match too
+            grid    = q.get("gridsquare", "").strip().upper()[:4]
 
             # Populate from explicit ADIF fields
             try:
@@ -645,8 +650,12 @@ class AdifLog:
             if country:
                 self.worked_country.add(country)
 
+            if grid:
+                self.worked_grids.add(grid)
+
             # Fill missing fields via cty.dat lookup on the callsign
             if call:
+                self.worked_calls.add(call)
                 info = self.cty.lookup(call)
                 if info:
                     self.worked_dxcc.add(info["primary_prefix"].upper())
@@ -657,6 +666,8 @@ class AdifLog:
 
         print(
             f"[adif] Loaded {self.total_qsos} QSOs from {self.path.name}\n"
+            f"[adif]   {len(self.worked_calls)} unique callsigns worked\n"
+            f"[adif]   {len(self.worked_grids)} grid squares worked\n"
             f"[adif]   {len(self.worked_dxcc)} DXCC entities worked\n"
             f"[adif]   {len(self.worked_cqz)} CQ zones worked\n"
             f"[adif]   {len(self.worked_country)} countries worked",
@@ -951,12 +962,19 @@ def handle_packet(
 
     # Callsign and grid are always emitted (blank when absent) so the entity
     # column stays at a consistent horizontal position on every line.
-    call_col = callsign if (is_cq and callsign) else ""
-    call_str = f"{call_col:<{_W_CALL}}"
-    cols.append(_col(call_str, _BOLD, color) if call_col else call_str)
+    call_col    = callsign if (is_cq and callsign) else ""
+    call_str    = f"{call_col:<{_W_CALL}}"
+    call_worked = bool(adif_log and call_col and call_col in adif_log.worked_calls)
+    if call_col:
+        call_color = _BGRN if call_worked else _BOLD
+        cols.append(_col(call_str, call_color, color))
+    else:
+        cols.append(call_str)
 
-    grid_col = grid if grid else ""
-    cols.append(f"{grid_col:<{_W_GRID}}")
+    grid_col    = grid if grid else ""
+    grid_str    = f"{grid_col:<{_W_GRID}}"
+    grid_worked = bool(adif_log and grid_col and grid_col[:4] in adif_log.worked_grids)
+    cols.append(_col(grid_str, _GRN, color) if (grid_worked and grid_col) else grid_str)
 
     if hamdat and is_cq:
         cols.append(f"{station_state or '':<2}")
