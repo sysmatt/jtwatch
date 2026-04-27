@@ -617,12 +617,14 @@ class AdifLog:
     sets and returns a list of human-readable NEEDED reason strings.
     """
 
-    def __init__(self, path: Path, cty: CtyDat):
-        self.path = path
-        self.cty  = cty
+    def __init__(self, path: Path, cty: CtyDat, hamdat=None):
+        self.path    = path
+        self.cty     = cty
+        self._hamdat = hamdat
 
         self.worked_calls:   set = set()
         self.worked_grids:   set = set()
+        self.worked_states:  set = set()
         self.worked_dxcc:    set = set()
         self.worked_cqz:     set = set()
         self.worked_country: set = set()
@@ -664,15 +666,25 @@ class AdifLog:
                     if not country:
                         self.worked_country.add(info["country"].upper())
 
-        print(
-            f"[adif] Loaded {self.total_qsos} QSOs from {self.path.name}\n"
-            f"[adif]   {len(self.worked_calls)} unique callsigns worked\n"
-            f"[adif]   {len(self.worked_grids)} grid squares worked\n"
-            f"[adif]   {len(self.worked_dxcc)} DXCC entities worked\n"
-            f"[adif]   {len(self.worked_cqz)} CQ zones worked\n"
+        if self._hamdat:
+            for call in self.worked_calls:
+                state = self._hamdat.state(call)
+                if state:
+                    self.worked_states.add(state)
+
+        lines = [
+            f"[adif] Loaded {self.total_qsos} QSOs from {self.path.name}",
+            f"[adif]   {len(self.worked_calls)} unique callsigns worked",
+            f"[adif]   {len(self.worked_grids)} grid squares worked",
+        ]
+        if self._hamdat:
+            lines.append(f"[adif]   {len(self.worked_states)} states worked")
+        lines += [
+            f"[adif]   {len(self.worked_dxcc)} DXCC entities worked",
+            f"[adif]   {len(self.worked_cqz)} CQ zones worked",
             f"[adif]   {len(self.worked_country)} countries worked",
-            file=sys.stderr,
-        )
+        ]
+        print("\n".join(lines), file=sys.stderr)
 
     def needed_flags(self, entity_info: dict, args: argparse.Namespace) -> list:
         """
@@ -977,7 +989,10 @@ def handle_packet(
     cols.append(_col(grid_str, _GRN, color) if (grid_worked and grid_col) else grid_str)
 
     if hamdat and is_cq:
-        cols.append(f"{station_state or '':<2}")
+        st_val     = station_state or ""
+        st_str     = f"{st_val:<2}"
+        st_worked  = bool(adif_log and st_val and st_val in adif_log.worked_states)
+        cols.append(_col(st_str, _GRN, color) if st_worked else st_str)
 
     if entity_info:
         em1 = em2 = em3 = ""
@@ -1203,6 +1218,11 @@ examples:
         help="Seconds to wait for a response to the --call prompt (default: 15).",
     )
     parser.add_argument(
+        "--stats", action="store_true",
+        help="Print a STATS: summary line after each completed decode cycle showing "
+             "total and CQ decode counts plus running averages split by even/odd slot.",
+    )
+    parser.add_argument(
         "--color", action="store_true",
         help="Colorize output with ANSI escape codes: signal fields dimmed, "
              "callsign bold, entity block cyan, worked contacts green, "
@@ -1239,66 +1259,6 @@ examples:
     else:
         print("[cty.dat] File not found — entity info will be blank.", file=sys.stderr)
 
-    # ── ADIF log ──────────────────────────────────────────────────────────────
-    adif_log  = None
-    adif_path = None
-    adif_mtime: float | None = None
-    if args.adif:
-        adif_path = Path(args.adif)
-        if not adif_path.exists():
-            print(f"[adif] File not found: {adif_path}", file=sys.stderr)
-            sys.exit(1)
-        try:
-            adif_log   = AdifLog(adif_path, cty)
-            adif_mtime = adif_path.stat().st_mtime
-        except Exception as exc:
-            print(f"[adif] Failed to load: {exc}", file=sys.stderr)
-            sys.exit(1)
-
-        checks = [n for flag, n in [
-            (args.need_entity,  "DXCC entity"),
-            (args.need_cqz,     "CQ zone"),
-            (args.need_country, "country"),
-        ] if flag]
-        print(
-            f"[adif] NEEDED checks active: {', '.join(checks) or 'none (all disabled)'}",
-            file=sys.stderr,
-        )
-        print(
-            "[adif] Bell (\\a) will sound and *** NEEDED *** will appear "
-            "for qualifying contacts.",
-            file=sys.stderr,
-        )
-
-    # ── Cycle stats tracker ───────────────────────────────────────────────────
-    cycle_tracker = CycleTracker()
-
-    # ── Alert / prompt dedup state ────────────────────────────────────────────
-    alerted:  set = set()   # (callsign, frozenset(flags)) keys already dispatched
-    prompted: set = set()   # callsigns already shown the --call prompt this run
-
-    # ── Pattern files ─────────────────────────────────────────────────────────
-    call_patterns: list = []
-    msg_patterns:  list = []
-    if args.match_calls:
-        call_patterns = load_regex_patterns(args.match_calls)
-        print(
-            f"[match-calls] {len(call_patterns)} pattern(s) loaded from "
-            f"{', '.join(args.match_calls)}",
-            file=sys.stderr,
-        )
-    if args.match_message:
-        msg_patterns = load_regex_patterns(args.match_message)
-        print(
-            f"[match-message] {len(msg_patterns)} pattern(s) loaded from "
-            f"{', '.join(args.match_message)}",
-            file=sys.stderr,
-        )
-    for flag, keyword in ((args.pota, "POTA"), (args.sota, "SOTA"), (args.iota, "IOTA")):
-        if flag:
-            msg_patterns.append(re.compile(rf"\b{keyword}\b", re.IGNORECASE))
-            print(f"[match-message] {keyword} pattern active", file=sys.stderr)
-
     # ── hamdat state lookup ───────────────────────────────────────────────────
     state_set: set = set()
     hamdat = None
@@ -1329,6 +1289,66 @@ examples:
         except Exception as exc:
             print(f"[match-state] Failed to open hamdat DB: {exc}", file=sys.stderr)
             sys.exit(1)
+
+    # ── ADIF log ──────────────────────────────────────────────────────────────
+    adif_log  = None
+    adif_path = None
+    adif_mtime: float | None = None
+    if args.adif:
+        adif_path = Path(args.adif)
+        if not adif_path.exists():
+            print(f"[adif] File not found: {adif_path}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            adif_log   = AdifLog(adif_path, cty, hamdat)
+            adif_mtime = adif_path.stat().st_mtime
+        except Exception as exc:
+            print(f"[adif] Failed to load: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        checks = [n for flag, n in [
+            (args.need_entity,  "DXCC entity"),
+            (args.need_cqz,     "CQ zone"),
+            (args.need_country, "country"),
+        ] if flag]
+        print(
+            f"[adif] NEEDED checks active: {', '.join(checks) or 'none (all disabled)'}",
+            file=sys.stderr,
+        )
+        print(
+            "[adif] Bell (\\a) will sound and *** NEEDED *** will appear "
+            "for qualifying contacts.",
+            file=sys.stderr,
+        )
+
+    # ── Cycle stats tracker ───────────────────────────────────────────────────
+    cycle_tracker = CycleTracker() if args.stats else None
+
+    # ── Alert / prompt dedup state ────────────────────────────────────────────
+    alerted:  set = set()   # (callsign, frozenset(flags)) keys already dispatched
+    prompted: set = set()   # callsigns already shown the --call prompt this run
+
+    # ── Pattern files ─────────────────────────────────────────────────────────
+    call_patterns: list = []
+    msg_patterns:  list = []
+    if args.match_calls:
+        call_patterns = load_regex_patterns(args.match_calls)
+        print(
+            f"[match-calls] {len(call_patterns)} pattern(s) loaded from "
+            f"{', '.join(args.match_calls)}",
+            file=sys.stderr,
+        )
+    if args.match_message:
+        msg_patterns = load_regex_patterns(args.match_message)
+        print(
+            f"[match-message] {len(msg_patterns)} pattern(s) loaded from "
+            f"{', '.join(args.match_message)}",
+            file=sys.stderr,
+        )
+    for flag, keyword in ((args.pota, "POTA"), (args.sota, "SOTA"), (args.iota, "IOTA")):
+        if flag:
+            msg_patterns.append(re.compile(rf"\b{keyword}\b", re.IGNORECASE))
+            print(f"[match-message] {keyword} pattern active", file=sys.stderr)
 
     # ── JSON output ───────────────────────────────────────────────────────────
     json_fh = None
@@ -1385,7 +1405,7 @@ examples:
                     mtime = adif_path.stat().st_mtime
                     if mtime != adif_mtime:
                         adif_mtime = mtime
-                        adif_log = AdifLog(adif_path, cty)
+                        adif_log = AdifLog(adif_path, cty, hamdat)
                         print("[adif] File changed — reloaded.", file=sys.stderr)
                 except OSError:
                     pass
