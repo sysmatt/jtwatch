@@ -58,6 +58,12 @@ Options
   --pota                      Flag CQ POTA calls as MATCH (no file required).
   --sota                      Flag CQ SOTA calls as MATCH (no file required).
   --iota                      Flag CQ IOTA calls as MATCH (no file required).
+  --match-state STATES        Comma-separated US state abbreviations (e.g. TX,CA,NY) or a file
+                              with one abbreviation per line. Callsigns are resolved to their
+                              FCC-licensed state via the hamdat SQLite database.
+                              Matching CQs are flagged *** MATCH *** and ring the bell.
+  --hamdat DB                 Path to the hamdat SQLite database
+                              (default: ~/.hamdat/hamdat.db). Only used with --match-state.
   --call                      On NEEDED/MATCH events, prompt "Do you want to call <call>? [Y/n]".
                               Pressing Enter defaults to yes; times out to no after --call-timeout
                               seconds. Each callsign is prompted at most once per run.
@@ -73,6 +79,7 @@ import json
 import re
 import select
 import socket
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -89,6 +96,8 @@ MSG_REPLY  = 4
 
 CTY_DAT_URL     = "https://www.country-files.com/cty/cty.dat"
 CTY_DAT_DEFAULT = Path.home() / ".jtwatch_cty.dat"
+
+HAMDAT_DB_DEFAULT = Path.home() / ".hamdat" / "hamdat.db"
 
 BELL = "\a"   # ASCII 0x07 — rings the terminal bell on NEEDED contacts
 
@@ -258,6 +267,57 @@ class CtyDat:
             if call.startswith(prefix):
                 return dict(entry)
         return None
+
+
+def load_state_set(value: str) -> set:
+    """
+    Return a set of uppercase US state abbreviations from either a file path
+    (one abbreviation per line, # = comment) or a comma-separated list.
+    """
+    p = Path(value)
+    if p.is_file():
+        states = set()
+        for raw in p.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            states.add(line.upper())
+        return states
+    return {s.strip().upper() for s in value.split(",") if s.strip()}
+
+
+class HamdatLookup:
+    """
+    Read-only interface to a hamdat SQLite database for callsign → US state lookups.
+    Results are cached in memory so repeated decodes of the same callsign hit the
+    DB only once per run.
+    """
+
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self._conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        self._cache: dict = {}
+
+    def state(self, callsign: str) -> str | None:
+        """Return the 2-letter US state code for an active license, or None."""
+        call = callsign.upper().strip()
+        if call in self._cache:
+            return self._cache[call]
+        row = self._conn.execute(
+            """SELECT e.state
+               FROM license_header h
+               JOIN entity e ON e.unique_system_identifier = h.unique_system_identifier
+                   AND (e.entity_type = 'L' OR e.entity_type = '')
+               WHERE h.call_sign = ? AND h.license_status = 'A'
+               ORDER BY h.id DESC LIMIT 1""",
+            (call,),
+        ).fetchone()
+        result = (row[0] or "").strip().upper() or None if row else None
+        self._cache[call] = result
+        return result
+
+    def close(self):
+        self._conn.close()
 
 
 def load_regex_patterns(file_paths: list) -> list:
@@ -669,6 +729,8 @@ def handle_packet(
     json_fh,                    # file object | None
     call_patterns: list,        # compiled regexes for --match-calls
     msg_patterns:  list,        # compiled regexes for --match-message
+    state_set:     set,         # uppercase state abbreviations for --match-state
+    hamdat,                     # HamdatLookup | None
     alerted:       set,         # dedup set for external alerts (mutated in place)
     prompted:      set,         # callsigns already prompted this run (mutated in place)
     tx_sock,                    # unbound UDP socket for sending commands to WSJT-X
@@ -742,12 +804,17 @@ def handle_packet(
         needed_flags = adif_log.needed_flags(entity_info, args)
     is_needed = bool(needed_flags)
 
-    # ── Pattern-match checks (--match-calls / --match-message) ────────────────
+    # ── Pattern-match checks (--match-calls / --match-message / --match-state) ─
     match_flags: list = []
     if call_patterns and callsign:
         match_flags.extend(f"CALL:{m}" for m in _regex_matches(callsign, call_patterns))
     if msg_patterns and msg_text:
         match_flags.extend(f"MSG:{m}" for m in _regex_matches(msg_text, msg_patterns))
+    station_state: str | None = None
+    if hamdat and callsign:
+        station_state = hamdat.state(callsign)
+        if state_set and station_state and station_state in state_set:
+            match_flags.append(f"STATE:{station_state}")
     is_match = bool(match_flags)
 
     # ── External alerts (--alert-command / --alert-ntfy) ──────────────────────
@@ -796,6 +863,9 @@ def handle_packet(
 
     grid_col = grid if grid else ""
     cols.append(f"{grid_col:<{_W_GRID}}")
+
+    if hamdat and is_cq:
+        cols.append(f"{station_state or '':<2}")
 
     if entity_info:
         em1 = em2 = em3 = ""
@@ -886,6 +956,8 @@ def _print_header(args: argparse.Namespace, has_adif: bool = False) -> None:
     parts.append(f"{'message':<{_W_MSG}}")
     parts.append(f"{'callsign':<{_W_CALL}}")
     parts.append(f"{'grid':<{_W_GRID}}")
+    if args.match_state:
+        parts.append(f"{'ST':<2}")
     # entity block; when --adif active each of CQz/ITUz/ct is prefixed by a 2-cell emoji
     w = 2 if has_adif and args.need_entity  else 0
     x = 2 if has_adif and args.need_cqz     else 0
@@ -976,6 +1048,17 @@ examples:
                         help="Flag CQ SOTA calls as *** MATCH *** (no file required).")
     parser.add_argument("--iota", action="store_true",
                         help="Flag CQ IOTA calls as *** MATCH *** (no file required).")
+    parser.add_argument(
+        "--match-state", metavar="STATES",
+        help="Comma-separated US state abbreviations (e.g. TX,CA,NY) or a file with one "
+             "abbreviation per line (# = comment). Callsigns are resolved to their FCC-licensed "
+             "state via the hamdat SQLite database. Matching CQs are flagged *** MATCH ***.",
+    )
+    parser.add_argument(
+        "--hamdat", metavar="DB", default=str(HAMDAT_DB_DEFAULT),
+        help=f"Path to the hamdat SQLite database (default: {HAMDAT_DB_DEFAULT}). "
+             "Only used when --match-state is active.",
+    )
 
     # External alerting
     parser.add_argument(
@@ -1094,6 +1177,37 @@ examples:
             msg_patterns.append(re.compile(rf"\b{keyword}\b", re.IGNORECASE))
             print(f"[match-message] {keyword} pattern active", file=sys.stderr)
 
+    # ── hamdat state lookup ───────────────────────────────────────────────────
+    state_set: set = set()
+    hamdat = None
+    if args.match_state:
+        try:
+            state_set = load_state_set(args.match_state)
+        except OSError as exc:
+            print(f"[match-state] Cannot read {args.match_state}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if not state_set:
+            print("[match-state] Warning: no state abbreviations found.", file=sys.stderr)
+        else:
+            print(
+                f"[match-state] {len(state_set)} state(s) active: {', '.join(sorted(state_set))}",
+                file=sys.stderr,
+            )
+        db_path = Path(args.hamdat)
+        if not db_path.exists():
+            print(
+                f"[match-state] hamdat database not found: {db_path}\n"
+                "[match-state] Run 'hamdat --pull' to build the database.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        try:
+            hamdat = HamdatLookup(db_path)
+            print(f"[match-state] Using hamdat DB: {db_path}", file=sys.stderr)
+        except Exception as exc:
+            print(f"[match-state] Failed to open hamdat DB: {exc}", file=sys.stderr)
+            sys.exit(1)
+
     # ── JSON output ───────────────────────────────────────────────────────────
     json_fh = None
     if args.save:
@@ -1155,8 +1269,8 @@ examples:
                     pass
 
             printed = handle_packet(data, args, cty, adif_log, json_fh,
-                                    call_patterns, msg_patterns, alerted, prompted,
-                                    tx_sock, wsjt_addr)
+                                    call_patterns, msg_patterns, state_set, hamdat,
+                                    alerted, prompted, tx_sock, wsjt_addr)
             if printed:
                 line_count += 1
                 if line_count % _HEADER_EVERY == 0:
@@ -1168,6 +1282,8 @@ examples:
         tx_sock.close()
         if json_fh:
             json_fh.close()
+        if hamdat:
+            hamdat.close()
 
 
 if __name__ == "__main__":
