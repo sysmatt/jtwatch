@@ -12,11 +12,12 @@ Optional regex watchlists let you flag specific callsigns or message patterns. E
 
 ## Features
 
-- Zero dependencies — Python standard library only
+- Zero external dependencies — Python standard library only (`sqlite3` is bundled with Python)
 - Auto-downloads and caches `cty.dat` on first run
 - ADIF log comparison with per-category worked/needed status
 - Regex watchlists for callsigns and full decoded messages
 - Built-in `--pota`, `--sota`, `--iota` flags to match activations without a watchlist file
+- **WAS state matching** — `--match-state` resolves callsigns to their FCC-licensed state via [hamdat](https://github.com/sysmatt/hamdat) and flags matching CQs; adds a `ST` column to every output line
 - External alerting via script (`--alert-command`) or ntfy.sh push (`--alert-ntfy TOPIC`)
 - Deduplicates alerts within a run — no repeated notifications for the same event
 - ADIF log auto-reloads when the file changes — no restart needed after logging a QSO
@@ -30,6 +31,7 @@ Optional regex watchlists let you flag specific callsigns or message patterns. E
 
 - Python 3.10 or later
 - WSJT-X configured to send UDP broadcasts (see below)
+- [hamdat](https://github.com/sysmatt/hamdat) SQLite database — optional, only required for `--match-state`
 
 ## Installation
 
@@ -97,6 +99,7 @@ Column descriptions:
 | `message` | `CQ DX W1ABC FN42` | Full decoded message (24 chars) |
 | `callsign` | `W1ABC` | Extracted callsign (12 chars) |
 | `grid` | `FN42` | Maidenhead grid square (6 chars) |
+| `ST` | `NJ` | FCC-licensed state — only shown with `--match-state` |
 | `entity` | `United States` | DXCC entity from cty.dat |
 | `CQz` | `CQ5` | CQ zone |
 | `ITUz` | `ITU8` | ITU zone |
@@ -192,6 +195,52 @@ Same file format, but patterns are tested against the **full decoded message str
 ```bash
 jtwatch --match-message activations.txt
 ```
+
+### `--match-state STATES` — Worked All States (WAS)
+
+Resolves each CQ callsign to its FCC-licensed US state using a [hamdat](https://github.com/sysmatt/hamdat) SQLite database and flags matching stations as `*** MATCH: STATE:XX ***`. A `ST` column is added to every CQ output line showing the resolved state (blank for non-US or unlicensed callsigns).
+
+States can be supplied as a comma-separated list or a file with one abbreviation per line (`#` = comment):
+
+```bash
+# Match specific states inline
+jtwatch --match-state TX,CA,NY
+
+# Load from a file (one state per line)
+jtwatch --match-state was_needed.txt
+
+# Alternate hamdat database path
+jtwatch --match-state TX,FL --hamdat /data/hamdat.db
+```
+
+Example `was_needed.txt`:
+
+```
+# States still needed for WAS
+AK
+HI
+ND
+SD
+MT
+```
+
+The state is resolved from the FCC ULS record for the callsign's **current active license** — this is the licensee's registered QTH, which is what counts for WAS credit.
+
+**Valid state abbreviations (FCC ULS codes):**
+
+```
+AL  AK  AZ  AR  CA  CO  CT  DE  FL  GA  HI  ID  IL  IN  IA  KS  KY  LA
+ME  MD  MA  MI  MN  MS  MO  MT  NE  NV  NH  NJ  NM  NY  NC  ND  OH  OK
+OR  PA  RI  SC  SD  TN  TX  UT  VT  VA  WA  WV  WI  WY  DC
+```
+
+**Prerequisite:** Build the hamdat database first:
+
+```bash
+hamdat --pull        # downloads FCC ULS data (~300 MB), takes a few minutes
+```
+
+The database is stored at `~/.hamdat/hamdat.db` by default. See the [hamdat repository](https://github.com/sysmatt/hamdat) for details.
 
 ### `--pota` / `--sota` / `--iota`
 
@@ -346,6 +395,8 @@ Each line is a complete JSON object:
 | `--pota` | off | Flag CQ POTA calls as MATCH (no file required) |
 | `--sota` | off | Flag CQ SOTA calls as MATCH (no file required) |
 | `--iota` | off | Flag CQ IOTA calls as MATCH (no file required) |
+| `--match-state STATES` | — | Comma-separated state abbreviations or file; flags matching FCC-licensed states as MATCH and adds a `ST` column |
+| `--hamdat DB` | `~/.hamdat/hamdat.db` | hamdat SQLite database path (used with `--match-state`) |
 | `--alert-command SCRIPT` | — | Script to call on NEEDED/MATCH events |
 | `--alert-ntfy TOPIC` | — | POST push alerts to ntfy.sh topic TOPIC |
 | `--call` | off | Prompt to call on NEEDED/MATCH events |

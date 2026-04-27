@@ -59,9 +59,14 @@ Options
   --sota                      Flag CQ SOTA calls as MATCH (no file required).
   --iota                      Flag CQ IOTA calls as MATCH (no file required).
   --match-state STATES        Comma-separated US state abbreviations (e.g. TX,CA,NY) or a file
-                              with one abbreviation per line. Callsigns are resolved to their
-                              FCC-licensed state via the hamdat SQLite database.
-                              Matching CQs are flagged *** MATCH *** and ring the bell.
+                              with one abbreviation per line (# = comment). Callsigns are
+                              resolved to their FCC-licensed state via the hamdat SQLite
+                              database. Matching CQs are flagged *** MATCH *** and ring the bell.
+                              A ST column is added to every output line showing the resolved state.
+                              Valid abbreviations (FCC ULS state codes):
+                                AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD
+                                MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC
+                                SD TN TX UT VT VA WA WV WI WY DC
   --hamdat DB                 Path to the hamdat SQLite database
                               (default: ~/.hamdat/hamdat.db). Only used with --match-state.
   --call                      On NEEDED/MATCH events, prompt "Do you want to call <call>? [Y/n]".
@@ -1050,9 +1055,16 @@ examples:
                         help="Flag CQ IOTA calls as *** MATCH *** (no file required).")
     parser.add_argument(
         "--match-state", metavar="STATES",
-        help="Comma-separated US state abbreviations (e.g. TX,CA,NY) or a file with one "
-             "abbreviation per line (# = comment). Callsigns are resolved to their FCC-licensed "
-             "state via the hamdat SQLite database. Matching CQs are flagged *** MATCH ***.",
+        help=(
+            "Comma-separated US state abbreviations (e.g. TX,CA,NY) or a file with one "
+            "abbreviation per line (# = comment). Callsigns are resolved to their FCC-licensed "
+            "state via the hamdat SQLite database. Matching CQs are flagged *** MATCH *** and "
+            "a ST column is added to every output line. "
+            "Valid abbreviations: "
+            "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD "
+            "MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC "
+            "SD TN TX UT VT VA WA WV WI WY DC"
+        ),
     )
     parser.add_argument(
         "--hamdat", metavar="DB", default=str(HAMDAT_DB_DEFAULT),

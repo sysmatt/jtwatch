@@ -1,0 +1,7 @@
+# jtwatch has no external (pip-installable) dependencies.
+# All functionality uses the Python standard library only.
+#
+# sqlite3 is bundled with all standard CPython builds (3.x) and is not a
+# separately installable package — no pip install needed.
+#
+# Python >= 3.10 is required (uses union type hints: X | Y).
