@@ -111,7 +111,7 @@ Column descriptions:
 | `CQz` | `CQ5` | CQ zone |
 | `ITUz` | `ITU8` | ITU zone |
 | `ct` | `NA` | Continent (2-char code) |
-| `QRZ` | `⭐` | ⭐ if a QSL card was received (`qsl_rcvd=Y`) — only shown with `--adif` |
+| `QRZ` | `⭐` | ⭐ if QRZ logbook confirmed (`app_qrzlog_status=C`) — only shown with `--adif` |
 | `LoW` | `🌎` | 🌎 if LoTW confirmation received (`lotw_qsl_rcvd=Y`) — only shown with `--adif` |
 | `[status]` | `[worked dxcc cqz country]` | Worked/NEEDED/MATCH status |
 
@@ -163,7 +163,7 @@ jtwatch builds several worked sets from the log:
 | DXCC entities | Primary prefix e.g. `W`, `DL`, `VK` | `*** NEEDED ***` detection |
 | CQ zones | Zone number 1–40 | `*** NEEDED ***` detection |
 | Countries | Country name string | `*** NEEDED ***` detection |
-| QSL received | Callsigns where `qsl_rcvd=Y` | ⭐ in `QRZ` column |
+| QRZ confirmed | Callsigns where `app_qrzlog_status=C` | ⭐ in `QRZ` column |
 | LoTW confirmed | Callsigns where `lotw_qsl_rcvd=Y` | 🌎 in `LoW` column |
 
 On startup, jtwatch reports the count of each set to stderr, for example:

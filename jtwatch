@@ -637,7 +637,7 @@ class AdifLog:
         self.worked_dxcc_all:     set  = set()   # all QSOs regardless of QSL status
         self.worked_cqz_all:      set  = set()   # all QSOs regardless of QSL status
         self.worked_country_all:  set  = set()   # all QSOs regardless of QSL status
-        self.qsl_rcvd_calls:      set  = set()   # callsigns with qsl_rcvd=Y
+        self.qrz_confirmed_calls: set  = set()   # callsigns with app_qrzlog_status=C
         self.lotw_qsl_rcvd_calls: set  = set()   # callsigns with lotw_qsl_rcvd=Y
         self.last_worked:         dict = {}       # call -> most recent date worked
         self.total_qsos = 0
@@ -658,10 +658,10 @@ class AdifLog:
             grid    = q.get("gridsquare", "").strip().upper()[:4]
 
             # QSL receipt status
-            qsl_rcvd  = q.get("qsl_rcvd",      "").strip().upper()
-            lotw_rcvd = q.get("lotw_qsl_rcvd", "").strip().upper()
-            if call and qsl_rcvd == "Y":
-                self.qsl_rcvd_calls.add(call)
+            qrz_status = q.get("app_qrzlog_status", "").strip().upper()
+            lotw_rcvd  = q.get("lotw_qsl_rcvd",    "").strip().upper()
+            if call and qrz_status == "C":
+                self.qrz_confirmed_calls.add(call)
             if call and lotw_rcvd == "Y":
                 self.lotw_qsl_rcvd_calls.add(call)
 
@@ -731,7 +731,7 @@ class AdifLog:
             f"[adif]   {len(self.worked_dxcc)} DXCC entities worked",
             f"[adif]   {len(self.worked_cqz)} CQ zones worked",
             f"[adif]   {len(self.worked_country)} countries worked",
-            f"[adif]   {len(self.qsl_rcvd_calls)} callsigns with QSL card received (qsl_rcvd=Y)",
+            f"[adif]   {len(self.qrz_confirmed_calls)} callsigns QRZ confirmed (app_qrzlog_status=C)",
             f"[adif]   {len(self.lotw_qsl_rcvd_calls)} callsigns with LoTW confirmed (lotw_qsl_rcvd=Y)",
         ]
         if self._qsl_only:
@@ -1092,7 +1092,7 @@ def handle_packet(
         cols.append(_col(entity_str, _CYN, color))
 
     if adif_log:
-        qrz_em = "⭐" if (call_col and call_col in adif_log.qsl_rcvd_calls)      else "  "
+        qrz_em = "⭐" if (call_col and call_col in adif_log.qrz_confirmed_calls) else "  "
         low_em = "🌎" if (call_col and call_col in adif_log.lotw_qsl_rcvd_calls) else "  "
         cols.append(qrz_em)
         cols.append(low_em)
