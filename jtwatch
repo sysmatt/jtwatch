@@ -994,8 +994,8 @@ def handle_packet(
     is_needed = bool(needed_flags)
 
     # Suppress NEEDED if this exact callsign was already worked today
-    if is_needed and call_col and call_col in adif_log.last_worked:
-        if (datetime.now(timezone.utc).date() - adif_log.last_worked[call_col]).days == 0:
+    if is_needed and callsign and callsign in adif_log.last_worked:
+        if (datetime.now(timezone.utc).date() - adif_log.last_worked[callsign]).days == 0:
             needed_flags = []
             is_needed = False
 
