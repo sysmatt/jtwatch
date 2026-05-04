@@ -1084,8 +1084,8 @@ def handle_packet(
     if adif_log:
         qrz_em = "⭐" if (call_col and call_col in adif_log.qsl_rcvd_calls)      else "  "
         low_em = "🌎" if (call_col and call_col in adif_log.lotw_qsl_rcvd_calls) else "  "
-        cols.append(f"QRZ:{qrz_em}")
-        cols.append(f"LoW:{low_em}")
+        cols.append(qrz_em)
+        cols.append(low_em)
 
     line = "  ".join(cols)
 

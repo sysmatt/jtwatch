@@ -117,9 +117,9 @@ Sample output:
 ```
 HHMMSSZ     dB    dt(s)    Hz  mode  message                   callsign      grid     days  | entity                              CQz   ITUz   ct  QRZ  LoW
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
-120145z   +12    +0.2s   1234  FT8   CQ DX W1ABC FN42          W1ABC         FN42      42d  | United States                   CQ5   ITU8   NA  QRZ:⭐  LoW:🌎
-120200z    -5    -1.1s    234  FT4   CQ W2XYZ                  W2XYZ                        | Germany                         CQ14  ITU28  EU  QRZ:    LoW:
-120215z   +30    +1.0s   2899  FT8   CQ POTA VK2ABC QF56       VK2ABC        QF56           | Australia                       CQ29  ITU59  OC  QRZ:    LoW:
+120145z   +12    +0.2s   1234  FT8   CQ DX W1ABC FN42          W1ABC         FN42      42d  | United States                   CQ5   ITU8   NA  ⭐  🌎
+120200z    -5    -1.1s    234  FT4   CQ W2XYZ                  W2XYZ                        | Germany                         CQ14  ITU28  EU      
+120215z   +30    +1.0s   2899  FT8   CQ POTA VK2ABC QF56       VK2ABC        QF56           | Australia                       CQ29  ITU59  OC      
 ```
 
 ### Color output (`--color`)
