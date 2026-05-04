@@ -74,6 +74,9 @@ jtwatch
 # With ADIF log — bell + NEEDED flag for new entities/zones/countries
 jtwatch --adif ~/Documents/wsjtx_log.adi
 
+# Multiple ADIF files merged — e.g. WSJT-X log + LoTW export
+jtwatch --adif ~/Documents/wsjtx_log.adi ~/Downloads/lotw_export.adi
+
 # Show all decodes, not just CQ, with local wall-clock time
 jtwatch --raw --show-time
 
@@ -449,7 +452,7 @@ Each line is a complete JSON object:
 | `--raw` | off | Print all decoded messages, not just CQ |
 | `--save FILE` | — | Append CQ records as JSON lines to FILE |
 | `--cty PATH` | `~/.jtwatch_cty.dat` | Path to cty.dat prefix database |
-| `--adif FILE` | — | ADIF logbook for NEEDED detection |
+| `--adif FILE [FILE ...]` | — | ADIF logbook(s) for NEEDED detection; multiple files are merged |
 | `--no-need-entity` | — | Disable DXCC entity NEEDED check |
 | `--no-need-cqz` | — | Disable CQ zone NEEDED check |
 | `--no-need-country` | — | Disable country name NEEDED check |

@@ -43,7 +43,7 @@ Options
   --raw                 Print ALL decoded messages, not just CQ
   --save FILE           Append each CQ record as a JSON line to FILE
   --cty PATH            Path to cty.dat            (default: ~/.jtwatch_cty.dat)
-  --adif FILE           ADIF log file for NEEDED detection
+  --adif FILE [FILE ...] ADIF log file(s) for NEEDED detection; multiple files are merged
   --no-need-entity      Disable DXCC-entity NEEDED check
   --no-need-cqz         Disable CQ-zone NEEDED check
   --no-need-country     Disable country-name NEEDED check
@@ -622,8 +622,8 @@ class AdifLog:
     sets and returns a list of human-readable NEEDED reason strings.
     """
 
-    def __init__(self, path: Path, cty: CtyDat, hamdat=None, qsl_only: bool = False):
-        self.path      = path
+    def __init__(self, paths, cty: CtyDat, hamdat=None, qsl_only: bool = False):
+        self.paths     = [paths] if isinstance(paths, Path) else list(paths)
         self.cty       = cty
         self._hamdat   = hamdat
         self._qsl_only = qsl_only
@@ -645,7 +645,9 @@ class AdifLog:
         self._load()
 
     def _load(self) -> None:
-        qsos = parse_adif(self.path)
+        qsos = []
+        for path in self.paths:
+            qsos.extend(parse_adif(path))
         self.total_qsos = len(qsos)
 
         for q in qsos:
@@ -717,8 +719,9 @@ class AdifLog:
                 if state:
                     self.worked_states.add(state)
 
+        names = ", ".join(p.name for p in self.paths)
         lines = [
-            f"[adif] Loaded {self.total_qsos} QSOs from {self.path.name}",
+            f"[adif] Loaded {self.total_qsos} QSOs from {names}",
             f"[adif]   {len(self.worked_calls)} unique callsigns worked",
             f"[adif]   {len(self.worked_grids)} grid squares worked",
         ]
@@ -1226,9 +1229,10 @@ examples:
         ),
     )
     parser.add_argument(
-        "--adif", metavar="FILE",
+        "--adif", metavar="FILE", nargs="+",
         help=(
-            "ADIF log file to compare against for NEEDED detection. "
+            "ADIF log file(s) to compare against for NEEDED detection. "
+            "Multiple files are merged into a single worked log. "
             "Contacts whose DXCC entity, CQ zone, or country are NOT in the "
             "log are flagged *** NEEDED *** and trigger an ASCII bell (\\a)."
         ),
@@ -1387,17 +1391,18 @@ examples:
             sys.exit(1)
 
     # ── ADIF log ──────────────────────────────────────────────────────────────
-    adif_log  = None
-    adif_path = None
-    adif_mtime: float | None = None
+    adif_log    = None
+    adif_paths: list = []
+    adif_mtimes: dict = {}
     if args.adif:
-        adif_path = Path(args.adif)
-        if not adif_path.exists():
-            print(f"[adif] File not found: {adif_path}", file=sys.stderr)
-            sys.exit(1)
+        adif_paths = [Path(p) for p in args.adif]
+        for p in adif_paths:
+            if not p.exists():
+                print(f"[adif] File not found: {p}", file=sys.stderr)
+                sys.exit(1)
         try:
-            adif_log   = AdifLog(adif_path, cty, hamdat, qsl_only=args.qsl_only)
-            adif_mtime = adif_path.stat().st_mtime
+            adif_log    = AdifLog(adif_paths, cty, hamdat, qsl_only=args.qsl_only)
+            adif_mtimes = {p: p.stat().st_mtime for p in adif_paths}
         except Exception as exc:
             print(f"[adif] Failed to load: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -1502,12 +1507,12 @@ examples:
         while True:
             data, wsjt_addr = sock.recvfrom(65535)
 
-            if adif_path is not None:
+            if adif_paths:
                 try:
-                    mtime = adif_path.stat().st_mtime
-                    if mtime != adif_mtime:
-                        adif_mtime = mtime
-                        adif_log = AdifLog(adif_path, cty, hamdat, qsl_only=args.qsl_only)
+                    new_mtimes = {p: p.stat().st_mtime for p in adif_paths}
+                    if new_mtimes != adif_mtimes:
+                        adif_mtimes = new_mtimes
+                        adif_log = AdifLog(adif_paths, cty, hamdat, qsl_only=args.qsl_only)
                         print("[adif] File changed — reloaded.", file=sys.stderr)
                 except OSError:
                     pass
