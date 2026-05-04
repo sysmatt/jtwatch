@@ -728,7 +728,14 @@ class AdifLog:
             f"[adif]   {len(self.worked_dxcc)} DXCC entities worked",
             f"[adif]   {len(self.worked_cqz)} CQ zones worked",
             f"[adif]   {len(self.worked_country)} countries worked",
+            f"[adif]   {len(self.qsl_rcvd_calls)} callsigns with QSL card received (qsl_rcvd=Y)",
+            f"[adif]   {len(self.lotw_qsl_rcvd_calls)} callsigns with LoTW confirmed (lotw_qsl_rcvd=Y)",
         ]
+        if self._qsl_only:
+            lines.append(
+                f"[adif]   qsl-only: {len(self.worked_dxcc)} of "
+                f"{len(self.worked_dxcc_all)} DXCC entities have LoTW confirmation"
+            )
         print("\n".join(lines), file=sys.stderr)
 
     def needed_flags(self, entity_info: dict, args: argparse.Namespace) -> list:
