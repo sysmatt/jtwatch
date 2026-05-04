@@ -14,7 +14,9 @@ Optional regex watchlists let you flag specific callsigns or message patterns. E
 
 - Zero external dependencies — Python standard library only (`sqlite3` is bundled with Python)
 - Auto-downloads and caches `cty.dat` on first run
-- ADIF log comparison with per-category worked/needed status; tracks unique callsigns, grid squares, and states worked
+- ADIF log comparison with per-category worked/needed status; tracks unique callsigns, grid squares, and states worked; shows days since last worked per callsign
+- Per-callsign QSL status indicators: ⭐ (QSL card received) and 🌎 (LoTW confirmed) columns in every decode row
+- **QSL-only mode** — `--qsl-only` narrows NEEDED detection to only LoTW-confirmed QSOs; unconfirmed contacts remain flagged as still needed
 - Regex watchlists for callsigns and full decoded messages
 - Built-in `--pota`, `--sota`, `--iota` flags to match activations without a watchlist file
 - **WAS state matching** — `--match-state` resolves callsigns to their FCC-licensed state via [hamdat](https://github.com/sysmatt/hamdat) and flags matching CQs; adds a `ST` column to every output line (Obviously imperfect as an operator might not be working in their home state)
@@ -84,8 +86,8 @@ jtwatch --port 2237
 The column header is printed on startup and repeats every 15 lines so it stays visible as output scrolls:
 
 ```
-HHMMSSZ     dB    dt(s)      Hz  mode  message                   callsign      grid    | entity                              CQz   ITUz   ct
-----------------------------------------------------------------------------------------------------------------------------------------
+HHMMSSZ     dB    dt(s)      Hz  mode  message                   callsign      grid     days  | entity                              CQz   ITUz   ct  QRZ  LoW
+------------------------------------------------------------------------------------------------------------------------------------------------------------
 ```
 
 Column descriptions:
@@ -100,21 +102,24 @@ Column descriptions:
 | `message` | `CQ DX W1ABC FN42` | Full decoded message (24 chars) |
 | `callsign` | `W1ABC` | Extracted callsign (12 chars) |
 | `grid` | `FN42` | Maidenhead grid square (6 chars) |
+| `days` | `  42d` | Days since callsign was last worked — only shown with `--adif` |
 | `ST` | `NJ` | FCC-licensed state — only shown with `--match-state` |
 | `entity` | `United States` | DXCC entity from cty.dat |
 | `CQz` | `CQ5` | CQ zone |
 | `ITUz` | `ITU8` | ITU zone |
 | `ct` | `NA` | Continent (2-char code) |
+| `QRZ` | `⭐` | ⭐ if a QSL card was received (`qsl_rcvd=Y`) — only shown with `--adif` |
+| `LoW` | `🌎` | 🌎 if LoTW confirmation received (`lotw_qsl_rcvd=Y`) — only shown with `--adif` |
 | `[status]` | `[worked dxcc cqz country]` | Worked/NEEDED/MATCH status |
 
 Sample output:
 
 ```
-HHMMSSZ     dB    dt(s)    Hz  mode  message                   callsign      grid    | entity                              CQz   ITUz   ct
-----------------------------------------------------------------------------------------------------------------------------------------
-120145z   +12    +0.2s   1234  FT8   CQ DX W1ABC FN42          W1ABC         FN42    | United States                   CQ5   ITU8   NA  [worked dxcc cqz country]
-120200z    -5    -1.1s    234  FT4   CQ W2XYZ                  W2XYZ                 | Germany                         CQ14  ITU28  EU  *** NEEDED: NEW-DXCC(DL) ***
-120215z   +30    +1.0s   2899  FT8   CQ POTA VK2ABC QF56       VK2ABC        QF56    | Australia                       CQ29  ITU59  OC  *** MATCH: CALL:VK2ABC ***
+HHMMSSZ     dB    dt(s)    Hz  mode  message                   callsign      grid     days  | entity                              CQz   ITUz   ct  QRZ  LoW
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+120145z   +12    +0.2s   1234  FT8   CQ DX W1ABC FN42          W1ABC         FN42      42d  | United States                   CQ5   ITU8   NA  QRZ:⭐  LoW:🌎
+120200z    -5    -1.1s    234  FT4   CQ W2XYZ                  W2XYZ                        | Germany                         CQ14  ITU28  EU  QRZ:    LoW:
+120215z   +30    +1.0s   2899  FT8   CQ POTA VK2ABC QF56       VK2ABC        QF56           | Australia                       CQ29  ITU59  OC  QRZ:    LoW:
 ```
 
 ### Color output (`--color`)
@@ -149,12 +154,14 @@ jtwatch builds several worked sets from the log:
 
 | Set | Content | Used for |
 |-----|---------|----------|
-| Callsigns | Every `CALL` field in the log | Bold green callsign in output (`--color`) |
+| Callsigns | Every `CALL` field in the log | Bold green callsign in output (`--color`); days-since-worked column |
 | Grid squares | Every `GRIDSQUARE` field (first 4 chars) | Green grid in output (`--color`) |
 | States | FCC-licensed state of each worked callsign, resolved via hamdat | Green `ST` column (`--color` + `--match-state`) |
 | DXCC entities | Primary prefix e.g. `W`, `DL`, `VK` | `*** NEEDED ***` detection |
 | CQ zones | Zone number 1–40 | `*** NEEDED ***` detection |
 | Countries | Country name string | `*** NEEDED ***` detection |
+| QSL received | Callsigns where `qsl_rcvd=Y` | ⭐ in `QRZ` column |
+| LoTW confirmed | Callsigns where `lotw_qsl_rcvd=Y` | 🌎 in `LoW` column |
 
 On startup, jtwatch reports the count of each set to stderr, for example:
 
@@ -183,6 +190,16 @@ jtwatch --adif ~/wsjtx_log.adi --no-need-cqz --no-need-country
 # Only alert on new CQ zones
 jtwatch --adif ~/wsjtx_log.adi --no-need-entity --no-need-country
 ```
+
+### `--qsl-only` — require LoTW confirmation for NEEDED
+
+When chasing DXCC or other awards that require confirmed contacts, `--qsl-only` tightens the NEEDED check: only QSOs with `lotw_qsl_rcvd=Y` are counted as "worked" for entity, zone, and country purposes. A contact you've made but not yet confirmed on LoTW will still show as **NEEDED**.
+
+```bash
+jtwatch --adif ~/wsjtx_log.adi --qsl-only
+```
+
+Callsign and grid coloring (green for previously worked) is unaffected — it reflects all contacts in the log regardless of QSL status. The LoW column (🌎) shows which callsigns have LoTW confirmations, making it easy to spot who you've worked but not yet confirmed.
 
 ## Pattern Matching
 
@@ -436,6 +453,7 @@ Each line is a complete JSON object:
 | `--no-need-entity` | — | Disable DXCC entity NEEDED check |
 | `--no-need-cqz` | — | Disable CQ zone NEEDED check |
 | `--no-need-country` | — | Disable country name NEEDED check |
+| `--qsl-only` | off | Require LoTW confirmation (`lotw_qsl_rcvd=Y`) for NEEDED checks; unconfirmed QSOs count as still needed |
 | `--match-calls FILE [...]` | — | Callsign regex watchlist file(s) |
 | `--match-message FILE [...]` | — | Full-message regex watchlist file(s) |
 | `--pota` | off | Flag CQ POTA calls as MATCH (no file required) |
