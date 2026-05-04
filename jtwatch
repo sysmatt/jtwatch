@@ -993,6 +993,12 @@ def handle_packet(
         needed_flags = adif_log.needed_flags(entity_info, args)
     is_needed = bool(needed_flags)
 
+    # Suppress NEEDED if this exact callsign was already worked today
+    if is_needed and call_col and call_col in adif_log.last_worked:
+        if (datetime.now(timezone.utc).date() - adif_log.last_worked[call_col]).days == 0:
+            needed_flags = []
+            is_needed = False
+
     # ── Pattern-match checks (--match-calls / --match-message / --match-state) ─
     match_flags: list = []
     if call_patterns and callsign:
