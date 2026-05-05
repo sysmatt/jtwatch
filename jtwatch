@@ -708,10 +708,16 @@ class AdifLog:
                         self.worked_cqz_all.add(info["cqz"])
                         if counts_as_worked:
                             self.worked_cqz.add(info["cqz"])
-                    if not country:
-                        self.worked_country_all.add(info["country"].upper())
-                        if counts_as_worked:
-                            self.worked_country.add(info["country"].upper())
+                    # Always add cty.dat country name so it stays consistent with
+                    # the decode-time check in needed_flags() / worked_flags(),
+                    # which also use cty.dat.  If the ADIF country field has a
+                    # different string (e.g. "Portugal" vs "Madeira Islands"), the
+                    # ADIF-only path above would leave worked_country with a name
+                    # that never matches, causing false NEEDED alerts / ❓ icons
+                    # even when the entity is fully confirmed.
+                    self.worked_country_all.add(info["country"].upper())
+                    if counts_as_worked:
+                        self.worked_country.add(info["country"].upper())
 
         if self._hamdat:
             for call in self.worked_calls:
