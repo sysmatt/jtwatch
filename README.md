@@ -23,7 +23,7 @@ Optional regex watchlists let you flag specific callsigns or message patterns. E
 - **Cycle statistics** — `--stats` prints a `STATS:` summary after each decode cycle with total and CQ decode counts plus running averages split by even/odd slot
 - External alerting via script (`--alert-command`) or ntfy.sh push (`--alert-ntfy TOPIC`)
 - Deduplicates alerts within a run — no repeated notifications for the same event
-- ADIF log auto-reloads when the file changes — no restart needed after logging a QSO
+- ADIF log auto-reloads when the file changes — no restart needed after logging a QSO; optional `--adif-change-script` runs a custom script on each reload
 - Interactive call prompt — answer yes and jtwatch sends a WSJT-X Reply (Type 4) UDP message to start TX automatically
 - Optional ANSI color output (`--color`) for at-a-glance status scanning, including per-field green highlighting for previously worked callsigns, grids, and states
 - Fixed-width columnar output for easy terminal scanning
@@ -345,6 +345,22 @@ W1ABC | United States CQ5 | NEEDED: NEW-DXCC(W), NEW-CQZ(5)
 VK2ABC | Australia CQ29 | MATCH: CALL:VK2ABC
 ```
 
+### `--adif-change-script SCRIPT`
+
+Calls `SCRIPT <path> [<path> ...]` (non-blocking) each time the ADIF log file(s) are reloaded due to a detected file change. Each ADIF file path is passed as a separate argument. This runs immediately after the reload completes, making it useful for triggering downstream processing (e.g. re-exporting data, sending a notification, or updating a scoreboard).
+
+```bash
+jtwatch --adif ~/Documents/wsjtx_log.adi --adif-change-script ~/bin/on_log_reload.sh
+```
+
+Example `on_log_reload.sh`:
+
+```bash
+#!/bin/bash
+# $@ contains the ADIF file path(s) that were just reloaded
+notify-send "jtwatch" "ADIF log reloaded: $*"
+```
+
 ### `--alert-command SCRIPT`
 
 Calls `SCRIPT "<alert message>"` (non-blocking) on each new event. The script receives the message as `$1`.
@@ -465,6 +481,7 @@ Each line is a complete JSON object:
 | `--match-state STATES` | — | Comma-separated state abbreviations or file; flags matching FCC-licensed states as MATCH and adds a `ST` column |
 | `--hamdat DB` | `~/.hamdat/hamdat.db` | hamdat SQLite database path (used with `--match-state`) |
 | `--stats` | off | Print a `STATS:` summary line after each decode cycle with decode counts and running averages by even/odd slot |
+| `--adif-change-script SCRIPT` | — | Script to run (non-blocking) after each ADIF reload; file path(s) passed as arguments |
 | `--alert-command SCRIPT` | — | Script to call on NEEDED/MATCH events |
 | `--alert-ntfy TOPIC` | — | POST push alerts to ntfy.sh topic TOPIC |
 | `--call` | off | Prompt to call on NEEDED/MATCH events |
