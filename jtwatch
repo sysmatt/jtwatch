@@ -59,6 +59,9 @@ Options
                               Duplicate events (same call + same flags) are suppressed.
   --alert-ntfy TOPIC          POST NEEDED/MATCH alerts to ntfy.sh topic TOPIC.
                               Duplicate events are suppressed for the lifetime of the run.
+  --adif-change-script SCRIPT Script to exec each time the ADIF log file(s) are reloaded
+                              due to a detected change. The reloaded file path(s) are passed
+                              as arguments. Runs non-blocking immediately after the reload.
   --pota                      Flag CQ POTA calls as MATCH (no file required).
   --sota                      Flag CQ SOTA calls as MATCH (no file required).
   --iota                      Flag CQ IOTA calls as MATCH (no file required).
@@ -1319,6 +1322,12 @@ examples:
 
     # External alerting
     parser.add_argument(
+        "--adif-change-script", metavar="SCRIPT",
+        help="Script to execute each time the ADIF log file(s) are reloaded due to a detected "
+             "change. The reloaded file path(s) are passed as arguments. Runs non-blocking "
+             "immediately after the reload completes.",
+    )
+    parser.add_argument(
         "--alert-command", metavar="SCRIPT",
         help="Script to execute on NEEDED/MATCH events; the alert message is passed as argument 1. "
              "Duplicate events (same callsign + same flags) are suppressed for this run.",
@@ -1536,6 +1545,13 @@ examples:
                         adif_mtimes = new_mtimes
                         adif_log = AdifLog(adif_paths, cty, hamdat, qsl_only=args.qsl_only)
                         print("[adif] File changed — reloaded.", file=sys.stderr)
+                        if args.adif_change_script:
+                            try:
+                                subprocess.Popen(
+                                    [args.adif_change_script] + [str(p) for p in adif_paths]
+                                )
+                            except Exception as exc:
+                                print(f"[adif-change-script] {exc}", file=sys.stderr)
                 except OSError:
                     pass
 
