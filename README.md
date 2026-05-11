@@ -2,9 +2,9 @@
 
 A terminal based (CLI) monitor for WSJT-X CQ calls. Listens on the WSJT-X UDP broadcast port and prints every CQ decode to stdout, enriched with DXCC entity, CQ zone, ITU zone, continent, and grid square from the AD1C `cty.dat` prefix database.
 
-With an ADIF logbook loaded, jtwatch flags contacts whose entity, CQ zone, or country you have not yet worked as **NEEDED** and rings the terminal bell. 
+With an ADIF logbook loaded, jtwatch flags contacts whose entity, CQ zone, or country you have not yet worked as **NEEDED**.
 
-When invoked with the --call option, jtwatch will prompt the pilot for confirmation then tell WSJT-X to begin responding to the CQ (Just like if you double clicked the call in the GUI) -- NOTE, This is NOT an automation tool, you MUST initiate the reply call.  
+When invoked with the `--call` option, jtwatch rings the terminal bell and prompts the operator for confirmation, then tells WSJT-X to begin responding to the CQ (the same as double-clicking the call in the WSJT-X GUI). **NOTE:** This is NOT an automation tool — you must initiate each reply.
 
 Optional regex watchlists let you flag specific callsigns or message patterns. External alerts can be sent via a custom script or [ntfy.sh](https://ntfy.sh) push notifications.
 
@@ -178,7 +178,7 @@ On startup, jtwatch reports the count of each set to stderr, for example:
 [adif]   61 countries worked
 ```
 
-Any CQ from a callsign whose entity, zone, or country is **not** in the log is flagged with `*** NEEDED: ... ***` and the terminal bell rings (`\a`).
+Any CQ from a callsign whose entity, zone, or country is **not** in the log is flagged with `*** NEEDED: ... ***`.
 
 Already-worked contacts show `[worked dxcc]`, `[worked dxcc cqz country]`, etc. — listing only the categories that are both enabled and matched.
 
@@ -193,6 +193,26 @@ jtwatch --adif ~/wsjtx_log.adi --no-need-cqz --no-need-country
 # Only alert on new CQ zones
 jtwatch --adif ~/wsjtx_log.adi --no-need-entity --no-need-country
 ```
+
+### `--worked-lag-days DAYS` — suppress alerts for recently worked callsigns
+
+By default, if a callsign appears in your ADIF log with a contact from **today**, NEEDED and MATCH alerts for that callsign are suppressed (you've already worked them this session). `--worked-lag-days` controls how far back that suppression reaches — for both NEEDED and MATCH events.
+
+| Value | Behaviour |
+|-------|-----------|
+| `0` (default) | Suppress if worked today (0 days ago) |
+| `7` | Suppress if worked within the last 7 days |
+| `-1` | Disable suppression entirely — always alert regardless of prior contacts |
+
+```bash
+# Suppress for a week — don't re-alert on calls worked recently
+jtwatch --adif ~/wsjtx_log.adi --worked-lag-days 7
+
+# Never suppress — always alert even if worked today
+jtwatch --adif ~/wsjtx_log.adi --worked-lag-days -1
+```
+
+The suppression applies consistently to all alert types: NEEDED (entity/zone/country), MATCH (callsign patterns, message patterns, POTA/SOTA/IOTA, state matches).
 
 ### `--qsl-only` — require LoTW confirmation for NEEDED
 
@@ -210,7 +230,7 @@ Watchlists let you flag specific callsigns or message patterns regardless of you
 
 ### `--match-calls FILE [FILE ...]`
 
-Each file contains one Python regular expression per line. Patterns are tested against the **resolved callsign**. Matching CQs are flagged `*** MATCH: CALL:<pattern> ***` and ring the bell.
+Each file contains one Python regular expression per line. Patterns are tested against the **resolved callsign**. Matching CQs are flagged `*** MATCH: CALL:<pattern> ***`.
 
 ```bash
 jtwatch --match-calls dx_watchlist.txt
@@ -381,7 +401,7 @@ Both `--alert-command` and `--alert-ntfy` can be used simultaneously.
 
 ## Interactive Call Prompt
 
-`--call` turns jtwatch into a basic call/no-call decision tool. On each new NEEDED or MATCH event, after printing the decode line, jtwatch writes a prompt to stderr and waits for your answer:
+`--call` turns jtwatch into a basic call/no-call decision tool. On each new NEEDED or MATCH event, jtwatch rings the terminal bell (`\a`) and writes a prompt to stderr, then waits for your answer:
 
 ```
 Do you want to call W1ABC? [Y/n]
@@ -402,7 +422,7 @@ jtwatch --adif ~/wsjtx_log.adi --call --call-timeout 8
 jtwatch --adif ~/wsjtx_log.adi --call --alert-ntfy my-ham-alerts
 ```
 
-Each callsign is prompted at most once per run. If the same station calls CQ repeatedly, you won't be asked again. The prompt is suppressed entirely when stdin is not a terminal (piped or scripted runs).
+Each callsign is prompted (and belled) at most once per run. If the same station calls CQ repeatedly, you won't be asked again. The prompt is suppressed entirely when stdin is not a terminal (piped or scripted runs).
 
 When you answer **yes**, jtwatch sends a **Reply (Type 4)** UDP message back to WSJT-X. This is the same action as double-clicking a decode in the WSJT-X UI: WSJT-X sets the DX callsign, generates the appropriate response message, and enables TX.
 
@@ -457,6 +477,7 @@ Each line is a complete JSON object:
 | `--no-need-cqz` | — | Disable CQ zone NEEDED check |
 | `--no-need-country` | — | Disable country name NEEDED check |
 | `--qsl-only` | off | Require LoTW confirmation (`lotw_qsl_rcvd=Y`) for NEEDED checks; unconfirmed QSOs count as still needed |
+| `--worked-lag-days DAYS` | `0` | Suppress NEEDED and MATCH alerts for callsigns worked within this many days; `-1` disables suppression entirely |
 | `--match-calls FILE [...]` | — | Callsign regex watchlist file(s) |
 | `--match-message FILE [...]` | — | Full-message regex watchlist file(s) |
 | `--pota` | off | Flag CQ POTA calls as MATCH (no file required) |
@@ -467,6 +488,6 @@ Each line is a complete JSON object:
 | `--stats` | off | Print a `STATS:` summary line after each decode cycle with decode counts and running averages by even/odd slot |
 | `--alert-command SCRIPT` | — | Script to call on NEEDED/MATCH events |
 | `--alert-ntfy TOPIC` | — | POST push alerts to ntfy.sh topic TOPIC |
-| `--call` | off | Prompt to call on NEEDED/MATCH events |
+| `--call` | off | Ring the terminal bell and prompt to call on NEEDED/MATCH events; each callsign prompted at most once per run |
 | `--call-timeout SECONDS` | `15` | Seconds before call prompt auto-answers no |
 | `--color` | off | Colorize output with ANSI escape codes |

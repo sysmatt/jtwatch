@@ -108,7 +108,7 @@ CTY_DAT_DEFAULT = Path.home() / ".jtwatch_cty.dat"
 
 HAMDAT_DB_DEFAULT = Path.home() / ".hamdat" / "hamdat.db"
 
-BELL = "\a"   # ASCII 0x07 — rings the terminal bell on NEEDED contacts
+BELL = "\a"   # ASCII 0x07 — rings the terminal bell when prompting to call
 
 # WSJT-X v3.x switched from full mode strings ("FT8") to single-byte codes.
 # Map compact codes to human-readable names; unknown codes pass through unchanged.
@@ -926,7 +926,7 @@ def handle_packet(
 ) -> None:
     """
     Decode one UDP datagram.  If it's a CQ (or --raw is set):
-      • print a formatted line to stdout (with BELL prefix if NEEDED)
+      • print a formatted line to stdout
       • append a JSON record to json_fh if --save was given
     """
     if len(data) < 12:
@@ -999,9 +999,9 @@ def handle_packet(
         needed_flags = adif_log.needed_flags(entity_info, args)
     is_needed = bool(needed_flags)
 
-    # Suppress NEEDED if this exact callsign was already worked today
-    if is_needed and callsign and callsign in adif_log.last_worked:
-        if (datetime.now(timezone.utc).date() - adif_log.last_worked[callsign]).days == 0:
+    # Suppress NEEDED if this exact callsign was worked within --worked-lag-days
+    if is_needed and args.worked_lag_days >= 0 and callsign and callsign in adif_log.last_worked:
+        if (datetime.now(timezone.utc).date() - adif_log.last_worked[callsign]).days <= args.worked_lag_days:
             needed_flags = []
             is_needed = False
 
@@ -1017,6 +1017,12 @@ def handle_packet(
         if state_set and station_state and station_state in state_set:
             match_flags.append(f"STATE:{station_state}")
     is_match = bool(match_flags)
+
+    # Suppress MATCH if this exact callsign was worked within --worked-lag-days
+    if is_match and adif_log and args.worked_lag_days >= 0 and callsign and callsign in adif_log.last_worked:
+        if (datetime.now(timezone.utc).date() - adif_log.last_worked[callsign]).days <= args.worked_lag_days:
+            match_flags = []
+            is_match = False
 
     # ── External alerts (--alert-command / --alert-ntfy) ──────────────────────
     if (is_needed or is_match) and (args.alert_command or args.alert_ntfy):
@@ -1118,17 +1124,15 @@ def handle_packet(
     if match_flags:
         alert_parts.append(_col(f"*** MATCH: {', '.join(match_flags)} ***", _BYEL, color))
 
-    # Emit BELL before the line so it sounds as the text appears
-    if is_needed or is_match:
-        print(BELL + line, flush=True)
-    else:
-        print(line, flush=True)
+    print(line, flush=True)
     if alert_parts:
         print("  " + "  ".join(alert_parts), flush=True)
 
     # ── Interactive call prompt (--call) ──────────────────────────────────────
+    # Bell is tied to the prompt: sounds exactly once per callsign, only when --call is active.
     if (is_needed or is_match) and args.call and callsign and callsign not in prompted:
         prompted.add(callsign)
+        print(BELL, end="", flush=True)
         if _prompt_call(callsign, args.call_timeout):
             sys.stderr.write(f"[call] Sending reply to {callsign} and enabling TX\n")
             sys.stderr.flush()
@@ -1246,7 +1250,7 @@ examples:
             "ADIF log file(s) to compare against for NEEDED detection. "
             "Multiple files are merged into a single worked log. "
             "Contacts whose DXCC entity, CQ zone, or country are NOT in the "
-            "log are flagged *** NEEDED *** and trigger an ASCII bell (\\a)."
+            "log are flagged *** NEEDED ***."
         ),
     )
 
@@ -1268,6 +1272,13 @@ examples:
             "CQ zone, and country checks. Worked callsign/grid coloring is "
             "unaffected (shows all contacts regardless of QSL status)."
         ),
+    )
+    parser.add_argument(
+        "--worked-lag-days", metavar="DAYS", type=int, default=0,
+        dest="worked_lag_days",
+        help="Suppress NEEDED alerts for a callsign already worked within this many days "
+             "(default: 0, meaning worked today is suppressed). Set to -1 to disable "
+             "the suppression entirely.",
     )
 
     # Pattern matching
@@ -1321,9 +1332,10 @@ examples:
     # Interactive call prompt
     parser.add_argument(
         "--call", action="store_true",
-        help='On NEEDED/MATCH events, prompt "Do you want to call <callsign>? [Y/n]". '
+        help='On NEEDED/MATCH events, ring the terminal bell and prompt '
+             '"Do you want to call <callsign>? [Y/n]". '
              "Enter defaults to yes; times out to no after --call-timeout seconds. "
-             "Each callsign is prompted at most once per run.",
+             "Each callsign is prompted (and belled) at most once per run.",
     )
     parser.add_argument(
         "--call-timeout", metavar="SECONDS", type=float, default=15.0,
@@ -1435,8 +1447,7 @@ examples:
                 file=sys.stderr,
             )
         print(
-            "[adif] Bell (\\a) will sound and *** NEEDED *** will appear "
-            "for qualifying contacts.",
+            "[adif] *** NEEDED *** will appear for qualifying contacts.",
             file=sys.stderr,
         )
 
@@ -1498,8 +1509,7 @@ examples:
     print(f"\nListening on {args.host}:{args.port}  [{label}]", file=sys.stderr)
     if adif_log:
         print(
-            f"[adif] {adif_log.total_qsos} QSOs in log — "
-            "bell will ring on NEEDED contacts.",
+            f"[adif] {adif_log.total_qsos} QSOs in log.",
             file=sys.stderr,
         )
     if args.call:
