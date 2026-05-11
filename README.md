@@ -8,6 +8,8 @@ When invoked with the `--call` option, jtwatch rings the terminal bell and promp
 
 Optional regex watchlists let you flag specific callsigns or message patterns. External alerts can be sent via a custom script or [ntfy.sh](https://ntfy.sh) push notifications.
 
+> **A note on automation:** jtwatch does not automate contacts. Using `--call` is no different from sitting at the WSJT-X UI and double-clicking a callsign yourself — you are still the operator making every decision. The goal of these tools is to help you *find* contacts that matter to you: the entity you need for DXCC, the state you're missing for WAS, the POTA activation you want to chase. jtwatch surfaces those opportunities; you decide whether to call.
+
 ### Note: Tested with WSJT-X 3.1.0 Improved
 
 ## Features
