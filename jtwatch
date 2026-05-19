@@ -264,7 +264,7 @@ class CtyDat:
                 call = a                       # W1ABC/P -> W1ABC
             elif a in portable:
                 call = b                       # P/W1ABC -> W1ABC
-            elif len(a) <= 3 and not a[-1].isdigit():
+            elif a and len(a) <= 3 and not a[-1].isdigit():
                 # Short non-numeric prefix suggests country: HC2/DH1TW
                 r = self._prefix_match(a)
                 if r:
