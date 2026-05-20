@@ -232,7 +232,7 @@ Watchlists let you flag specific callsigns or message patterns regardless of you
 
 ### `--match-calls FILE [FILE ...]`
 
-Each file contains one Python regular expression per line. Patterns are tested against the **resolved callsign**. Matching CQs are flagged `*** MATCH: CALL:<pattern> ***`.
+Each file contains one Python regular expression per line. Patterns are tested against the **resolved callsign**. Matching CQs are flagged `*** MATCH: CALL:<pattern> [<filename>] ***`, where `<filename>` is the basename of the file the pattern came from.
 
 ```bash
 jtwatch --match-calls dx_watchlist.txt
@@ -252,7 +252,7 @@ Example `dx_watchlist.txt`:
 
 ### `--match-message FILE [FILE ...]`
 
-Same file format, but patterns are tested against the **full decoded message string** (e.g. `CQ POTA W1ABC FN42`). Matches are flagged `*** MATCH: MSG:<pattern> ***` (note the `MSG:` prefix, vs `CALL:` for callsign patterns). Useful for catching activity modifiers or any other text in the decoded message.
+Same file format, but patterns are tested against the **full decoded message string** (e.g. `CQ POTA W1ABC FN42`). Matches are flagged `*** MATCH: MSG:<pattern> [<filename>] ***` (note the `MSG:` prefix, vs `CALL:` for callsign patterns). The `<filename>` shows which watchlist file the pattern came from. Useful for catching activity modifiers or any other text in the decoded message.
 
 ```bash
 jtwatch --match-message activations.txt

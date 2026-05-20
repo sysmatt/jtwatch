@@ -418,7 +418,8 @@ class HamdatLookup:
 
 def load_regex_patterns(file_paths: list) -> list:
     """Load compiled regex patterns from one or more files, one pattern per line.
-    Blank lines and lines starting with '#' are ignored."""
+    Blank lines and lines starting with '#' are ignored.
+    Returns a list of (compiled_pattern, source_filename) tuples."""
     patterns = []
     for path_str in file_paths:
         p = Path(path_str)
@@ -428,7 +429,7 @@ def load_regex_patterns(file_paths: list) -> list:
                 if not line or line.startswith("#"):
                     continue
                 try:
-                    patterns.append(re.compile(line, re.IGNORECASE))
+                    patterns.append((re.compile(line, re.IGNORECASE), p.name))
                 except re.error as exc:
                     print(f"[match] {p.name}:{i}: invalid regex {line!r}: {exc}",
                           file=sys.stderr)
@@ -439,8 +440,13 @@ def load_regex_patterns(file_paths: list) -> list:
 
 
 def _regex_matches(value: str, patterns: list) -> list:
-    """Return pattern strings that match *value* (case-insensitive search)."""
-    return [p.pattern for p in patterns if p.search(value)]
+    """Return match label strings for each (compiled_pattern, source) that matches *value*.
+    Label format: 'pattern [source]' when source is set, else just 'pattern'."""
+    results = []
+    for pat, src in patterns:
+        if pat.search(value):
+            results.append(f"{pat.pattern} [{src}]" if src else pat.pattern)
+    return results
 
 
 def _build_alert_msg(callsign, entity_info: dict,
@@ -917,8 +923,8 @@ def handle_packet(
     cty:           CtyDat,
     adif_log,                   # AdifLog | None
     json_fh,                    # file object | None
-    call_patterns: list,        # compiled regexes for --match-calls
-    msg_patterns:  list,        # compiled regexes for --match-message
+    call_patterns: list,        # (compiled_regex, source_filename) tuples for --match-calls
+    msg_patterns:  list,        # (compiled_regex, source_filename) tuples for --match-message
     state_set:     set,         # uppercase state abbreviations for --match-state
     hamdat,                     # HamdatLookup | None
     cycle_tracker,              # CycleTracker | None
@@ -1486,7 +1492,7 @@ examples:
         )
     for flag, keyword in ((args.pota, "POTA"), (args.sota, "SOTA"), (args.iota, "IOTA")):
         if flag:
-            msg_patterns.append(re.compile(rf"\b{keyword}\b", re.IGNORECASE))
+            msg_patterns.append((re.compile(rf"\b{keyword}\b", re.IGNORECASE), None))
             print(f"[match-message] {keyword} pattern active", file=sys.stderr)
 
     # ── JSON output ───────────────────────────────────────────────────────────
