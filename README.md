@@ -30,6 +30,7 @@ Optional regex watchlists let you flag specific callsigns or message patterns. E
 - Optional ANSI color output (`--color`) for at-a-glance status scanning, including per-field green highlighting for previously worked callsigns, grids, and states
 - Fixed-width columnar output for easy terminal scanning
 - Optional JSON-lines output for downstream processing
+- **UDP proxy** — `--proxy PORT[,PORT...]` forwards every received WSJT-X packet to additional localhost ports, letting jtwatch and other tools (e.g. GridTracker) share the same data stream without competing for port 2237
 - Portable suffix handling (`W1ABC/P`, `HC2/DH1TW`, `VK9/W1ABC`, etc.)
 
 ## Requirements
@@ -480,12 +481,41 @@ Each line is a complete JSON object:
 
 `needed` is `null` when no ADIF log is loaded, an empty list when all checks pass, or a list of flag strings (e.g. `["NEW-DXCC(DL)"]`) when the contact is new.
 
+## UDP Proxy
+
+By default, only one process can usefully bind a UDP port at a time. If you run jtwatch alongside GridTracker, WSJT-X Log, or any other tool that listens on port 2237, the two processes will compete for packets — each receiving roughly half the stream and appearing broken.
+
+`--proxy` solves this by making jtwatch the single listener on port 2237. It forwards every raw packet it receives — verbatim, before any processing — to one or more additional localhost ports. Other tools connect to those forwarded ports and see the full unmodified WSJT-X protocol stream, including all message types (Heartbeat, Status, QSO Logged, Decode, etc.).
+
+```bash
+# jtwatch on 2237, GridTracker pointed at 2238
+jtwatch --adif ~/wsjtx_log.adi --proxy 2238
+
+# Forward to two additional tools
+jtwatch --adif ~/wsjtx_log.adi --proxy 2238,2239
+```
+
+**Setup:**
+
+1. In WSJT-X (**File → Settings → Reporting**), set the UDP server address to `127.0.0.1` and port to `2237` (jtwatch's port — unchanged).
+2. In GridTracker (or the other tool), change its UDP port from `2237` to `2238` (or whichever port you chose).
+3. Run jtwatch with `--proxy 2238`.
+
+On startup, jtwatch confirms the forwarding destinations:
+
+```
+[proxy] Forwarding all packets to: localhost:2238
+```
+
+If a destination isn't listening yet, send errors are silently ignored — jtwatch continues normally and the proxy resumes automatically when the other tool connects.
+
 ## Options Reference
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--host HOST` | `0.0.0.0` | UDP bind address |
 | `--port PORT` | `2237` | UDP port (match WSJT-X Reporting settings) |
+| `--proxy PORT[,PORT...]` | — | Forward all received packets to these additional localhost ports; lets other tools share the WSJT-X stream without competing for port 2237 |
 | `--show-time` | off | Prepend local wall-clock `HH:MM:SS` to each line |
 | `--raw` | off | Print all decoded messages, not just CQ |
 | `--save FILE` | — | Append CQ records as JSON lines to FILE |
@@ -510,3 +540,172 @@ Each line is a complete JSON object:
 | `--call` | off | Ring the terminal bell and prompt to call on NEEDED/MATCH events; each callsign prompted at most once per run |
 | `--call-timeout SECONDS` | `15` | Seconds before call prompt auto-answers no |
 | `--color` | off | Colorize output with ANSI escape codes |
+
+## Deeper explanation of NEEDED/MATCH logic and implementation
+
+### Two independent alert systems
+
+**NEEDED** and **MATCH** both ring the bell and print `*** ... ***` lines, but they answer completely different questions and are computed separately.
+
+---
+
+### NEEDED — "have I worked this entity before?"
+
+Requires `--adif`. Fires when the incoming station's **DXCC entity**, **CQ zone**, or **country** (any combination, independently) is not yet in your log. These are entity-level checks, not callsign-level.
+
+The ADIF log populates **three pairs of sets** at startup:
+
+| Set | What goes in | Used for |
+|---|---|---|
+| `worked_dxcc` | QSL-filtered DXCC prefixes | NEEDED check |
+| `worked_dxcc_all` | Every worked DXCC prefix | ❓ display |
+| `worked_cqz` | QSL-filtered CQ zones | NEEDED check |
+| `worked_cqz_all` | Every worked CQ zone | ❓ display |
+| `worked_country` | QSL-filtered countries | NEEDED check |
+| `worked_country_all` | Every worked country | ❓ display |
+
+Without `--qsl-only`, "filtered" and "all" are identical — every QSO counts.
+
+With `--qsl-only`, only QSOs where **`lotw_qsl_rcvd=Y`** populate the filtered sets. The `_all` sets always get every QSO regardless.
+
+**Note on DXCC population:** The code uses `cty.dat` to resolve callsigns from the log (not just the ADIF `dxcc` field), so the entity match at decode time and the entity recorded in the log use the same lookup engine. This avoids false NEEDED alerts from ADIF/cty.dat country-name mismatches.
+
+---
+
+### The three entity-block emojis (✅ ❓ ❌)
+
+These appear per-category (DXCC / CQZ / country) in the entity block for each decoded line:
+
+- **✅** — in the **filtered** worked set (`worked_dxcc` / `worked_cqz` / `worked_country`)
+- **❓** — in `_all` but **not** in the filtered set — meaning worked in some QSO but **no LoTW confirmation yet** (only meaningful when `--qsl-only` is active; without it ✅ and ❓ are the same)
+- **❌** — not in either set; genuinely never worked
+
+When `--qsl-only` is off, you will only ever see ✅ or ❌. The ❓ state only exists when the two sets can diverge.
+
+---
+
+### MATCH — "is this station on a watchlist?"
+
+Completely independent of the log. Fires based on patterns or rules you specify:
+
+- `--match-calls FILE` — regex on the callsign itself
+- `--match-message FILE` — regex on the full decoded message string
+- `--pota` / `--sota` / `--iota` — built-in message pattern shortcuts (compiled into the message pattern list)
+- `--match-state STATES` — FCC state lookup via hamdat SQLite; matches callsigns licensed in specified states
+
+MATCH does not care whether you have worked the entity. It fires even on a callsign you have worked 50 times, unless lag suppression kicks in.
+
+---
+
+### QRZ ⭐ and LoTW 🌎 column indicators
+
+These are **per-callsign, display-only** indicators. They tell you whether you have a logged confirmation *for that specific callsign*:
+
+- **⭐** — callsign has `app_qrzlog_status=C` in the ADIF (QRZ logbook confirmation received)
+- **🌎** — callsign has `lotw_qsl_rcvd=Y` in the ADIF (LoTW QSL received for a contact with this call)
+
+**Important:** These indicators have no effect on NEEDED logic. They show per-callsign confirmation, whereas NEEDED operates on per-entity sets. You can have 🌎 for a callsign and still see a NEEDED flag if that entity's primary prefix is somehow missing from `worked_dxcc` — for example after clearing your log or if the cty.dat prefix assignment changed.
+
+With `--qsl-only`, the 🌎 indicator is indirectly meaningful because `lotw_qsl_rcvd=Y` on a QSO is what determines whether that QSO's entity/zone/country counted toward the filtered sets. But the indicator itself is just a callsign-level display fact.
+
+---
+
+### Per-callsign tracking (always ignores `--qsl-only`)
+
+These sets and dicts are always populated from every QSO, regardless of QSL status:
+
+| Field | Tracks | Used for |
+|---|---|---|
+| `worked_calls` | Every worked callsign | Bold-green callsign color |
+| `worked_grids` | Every worked grid square | Green grid column |
+| `worked_states` | US states of worked callsigns (via hamdat) | Green `ST` column |
+| `last_worked[call]` | Most recent QSO date per callsign | Days column; lag suppression |
+
+---
+
+### `--worked-lag-days` suppression
+
+After NEEDED and MATCH flags are computed, a suppression pass runs:
+
+> If the callsign was worked within N days → clear the flag list
+
+This is **callsign-level**, not entity-level. The intent: if you just worked PY1ABC (Brazil) yesterday but the LoTW confirmation has not arrived yet, you do not want Brazil to keep firing NEEDED every 15 seconds. Lag suppression silences it for N days regardless of QSL status. The same suppression applies to MATCH: if you already worked a watchlist station recently, it will not keep alerting.
+
+Default is `0` (worked today → suppress). Set to `-1` to disable entirely and always alert regardless of recency.
+
+---
+
+### At a glance — what respects `--qsl-only`?
+
+| What it tracks | Level | Respects `--qsl-only`? |
+|---|---|---|
+| Callsign color (bold-green) | Per callsign | No — all QSOs |
+| Grid color | Per grid | No — all QSOs |
+| State color | Per state | No — all QSOs |
+| Days column / lag suppression | Per callsign | No — all QSOs |
+| ⭐ QRZ indicator | Per callsign | No — all QSOs |
+| 🌎 LoTW indicator | Per callsign | No — all QSOs |
+| ✅ entity emoji (NEEDED check) | Per entity/zone/country | **Yes** |
+| ❓ entity emoji (worked but unconfirmed) | Per entity/zone/country | N/A — shows the gap between filtered and unfiltered |
+| NEEDED alert itself | Per entity/zone/country | **Yes** |
+| MATCH alert | Callsign/message/state pattern | No |
+
+## Using multiple WSJT-X UDP integrations simultaneously
+
+WSJT-X sends its UDP stream to a single configured destination. If you run jtwatch alongside GridTracker, WSJT-X Log, or any other tool that expects to receive those packets, only one of them can be the primary listener — the other tools need to receive a forwarded copy.
+
+Either jtwatch or GridTracker can act as the proxy. The simplest approach depends on which tool you prefer to configure.
+
+### Option A — jtwatch as proxy (recommended)
+
+Point WSJT-X at jtwatch (port 2237, unchanged), then have jtwatch forward a copy to GridTracker on a free port of your choice. Port 2238 is a natural pick since it's adjacent and almost always free.
+
+**Step 1** — In WSJT-X (**File → Settings → Reporting**), confirm the UDP server is set to `127.0.0.1:2237`. No change needed if jtwatch was already working.
+
+**Step 2** — In GridTracker (**Settings → WSJT-X**), change the UDP port from `2237` to `2238` and the address to `127.0.0.1`.
+
+**Step 3** — Start jtwatch with `--proxy 2238`:
+
+```bash
+jtwatch --adif ~/wsjtx_log.adi --proxy 2238
+```
+
+jtwatch will confirm on startup:
+
+```
+Listening on 0.0.0.0:2237  [CQ calls only]
+[proxy] Forwarding all packets to: localhost:2238
+```
+
+Every packet WSJT-X sends — Decode, Heartbeat, Status, QSO Logged, etc. — is forwarded to GridTracker verbatim before jtwatch processes it. GridTracker sees the full unmodified protocol stream.
+
+To forward to a third tool as well, just add another port:
+
+```bash
+jtwatch --adif ~/wsjtx_log.adi --proxy 2238,2239
+```
+
+### Option B — GridTracker as proxy
+
+If you prefer to keep GridTracker on its default port, reverse the arrangement: WSJT-X sends to GridTracker, and GridTracker relays a copy to jtwatch.
+
+**Step 1** — In GridTracker (**Settings → WSJT-X**), enable the UDP relay/forwarding option and set it to forward to `127.0.0.1:2238`.
+
+**Step 2** — Start jtwatch on port 2238 instead of 2237:
+
+```bash
+jtwatch --adif ~/wsjtx_log.adi --port 2238
+```
+
+WSJT-X and GridTracker keep their existing configuration; jtwatch simply listens on the forwarded port.
+
+### Choosing a free port
+
+Port 2238 is used in the examples above but any unused port above 1024 works. To confirm a port is free before using it:
+
+```bash
+ss -uln | grep 2238      # Linux
+netstat -anu | grep 2238 # macOS / older Linux
+```
+
+No output means the port is available.
